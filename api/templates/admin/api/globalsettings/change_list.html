@@ -1,0 +1,14 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools %}
+    {% if show_financial_link %}
+        <ul class="object-tools">
+            <li>
+                <a href="dashboard/" class="viewsitelink" style="background: #4CAF50; color: white; font-weight: bold;">
+                    📊 VOIR LE BILAN FINANCIER GLOBAL
+                </a>
+            </li>
+        </ul>
+    {% endif %}
+    {{ block.super }}
+{% endblock %}
