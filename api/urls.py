@@ -4,11 +4,12 @@ from api.views import (
     MechanicViewSet, VehicleViewSet, ScanSessionViewSet,
     SubscriptionPlanViewSet, SubscriptionViewSet, RegisterView, AdminDashboardView,
     VehicleModelViewSet, DTCReferenceViewSet, GlobalSettingsView, UpcomingModuleViewSet,
-    WelcomeContentViewSet, IoTDeviceViewSet, TelemetryViewSet, PredictiveAlertViewSet, FleetDashboardView
+    WelcomeContentViewSet, IoTDeviceViewSet, TelemetryViewSet, PredictiveAlertViewSet, FleetDashboardView,
+    PersonalDashboardView
 )
 
 router = DefaultRouter()
-router.register(r'mechanics', MechanicViewSet, basename='mechanic')
+router.register(r'users', MechanicViewSet, basename='user')
 router.register(r'vehicles', VehicleViewSet, basename='vehicle')
 router.register(r'vehicle-models', VehicleModelViewSet, basename='vehicle-model')
 router.register(r'scans', ScanSessionViewSet, basename='scan')
@@ -25,6 +26,7 @@ urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
     path('dashboard/', AdminDashboardView.as_view(), name='admin-dashboard'),
     path('fleet-dashboard/', FleetDashboardView.as_view(), name='fleet-dashboard'),
+    path('personal-dashboard/', PersonalDashboardView.as_view(), name='personal-dashboard'),
     path('settings/', GlobalSettingsView.as_view(), name='global-settings'),
     path('', include(router.urls)),
 ]

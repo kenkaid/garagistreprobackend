@@ -1,7 +1,7 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
 from django.urls import path
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.db.models import Sum
 from django.utils import timezone
 from api.models import (
@@ -9,6 +9,7 @@ from api.models import (
     Subscription, Payment, VehicleModel, GlobalSettings, UpcomingModule,
     WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert
 )
+from api.services.subscriptions import SubscriptionService
 
 class GaragisteAdminSite(admin.AdminSite):
     site_header = "Administration Garagiste Pro"
@@ -105,11 +106,34 @@ admin_site = GaragisteAdminSite(name='garagiste_admin')
 @admin.register(User, site=admin_site)
 class CustomUserAdmin(UserAdmin):
     fieldsets = UserAdmin.fieldsets + (
-        ('Info Pro', {'fields': ('user_type', 'is_mechanic', 'phone', 'shop_name', 'location')}),
+        ('Info Pro', {'fields': ('user_type', 'is_mechanic', 'phone', 'shop_name', 'location', 'has_used_trial')}),
     )
-    list_display = UserAdmin.list_display + ('user_type', 'is_mechanic', 'shop_name')
-    list_filter = UserAdmin.list_filter + ('user_type', 'is_mechanic')
+    list_display = UserAdmin.list_display + ('user_type', 'is_mechanic', 'shop_name', 'has_used_trial', 'subscription_status')
+    list_filter = UserAdmin.list_filter + ('user_type', 'is_mechanic', 'has_used_trial')
     search_fields = UserAdmin.search_fields + ('phone', 'shop_name')
+    actions = ['activate_trial_manually', 'deactivate_subscription']
+
+    def subscription_status(self, obj):
+        sub = obj.active_subscription
+        if sub:
+            return f"{sub.plan.name} (jusqu'au {sub.end_date.strftime('%d/%m/%Y')})"
+        return "Aucun"
+    subscription_status.short_description = "Abonnement Actif"
+
+    def activate_trial_manually(self, request, queryset):
+        for user in queryset:
+            # On réinitialise has_used_trial pour permettre la réactivation si besoin
+            user.has_used_trial = False
+            user.save()
+            SubscriptionService.activate_trial(user)
+        self.message_user(request, f"Période d'essai activée pour {queryset.count()} utilisateurs.")
+    activate_trial_manually.short_description = "Activer manuellement la période d'essai"
+
+    def deactivate_subscription(self, request, queryset):
+        for user in queryset:
+            Subscription.objects.filter(user=user, is_active=True).update(is_active=False)
+        self.message_user(request, f"Abonnements désactivés pour {queryset.count()} utilisateurs.")
+    deactivate_subscription.short_description = "Désactiver tous les abonnements"
 
 @admin.register(GlobalSettings, site=admin_site)
 class GlobalSettingsAdmin(admin.ModelAdmin):
@@ -186,7 +210,12 @@ class DTCReferenceAdmin(admin.ModelAdmin):
     search_fields = ('code', 'description')
 
 admin_site.register(ScanSession)
-admin_site.register(SubscriptionPlan)
+@admin.register(SubscriptionPlan, site=admin_site)
+class SubscriptionPlanAdmin(admin.ModelAdmin):
+    list_display = ('name', 'target_user_type', 'tier', 'price', 'duration_days')
+    list_filter = ('target_user_type', 'tier')
+    search_fields = ('name', 'description')
+
 admin_site.register(Subscription)
 admin_site.register(Payment)
 

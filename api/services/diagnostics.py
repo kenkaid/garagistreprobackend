@@ -33,7 +33,7 @@ class DiagnosticService:
         for code in dtc_codes:
             # On cherche d'abord si un code générique existe
             generic_ref = DTCReference.objects.filter(code=code, brand__isnull=True).first()
-            
+
             # Si le code n'existe ni en générique ni spécifique à la marque, on le crée
             DTCReference.objects.get_or_create(
                 code=code,
@@ -45,8 +45,8 @@ class DiagnosticService:
                 }
             )
 
-        # Prédiction des coûts via l'IA
-        predictions = DTCModelAI.predict_costs(dtc_codes, brand=brand)
+        # Prédiction des coûts via l'IA (On ignore les coûts si c'est une expertise pour ne pas fausser les stats)
+        predictions = DTCModelAI.predict_costs(dtc_codes, brand=brand) if scan_type != 'EXPERT' else {'estimated_labor': 0, 'estimated_parts_min': 0}
 
         # Extraction des données de kilométrage
         mileage_ecu = mileage_data.get('mileage_ecu') if mileage_data else None
@@ -57,8 +57,8 @@ class DiagnosticService:
             mechanic=mechanic,
             vehicle=vehicle,
             notes=notes,
-            actual_labor_cost=predictions['estimated_labor'],
-            actual_parts_cost=predictions['estimated_parts_min'],
+            actual_labor_cost=predictions.get('estimated_labor', 0),
+            actual_parts_cost=predictions.get('estimated_parts_min', 0),
             mileage_ecu=mileage_ecu,
             mileage_abs=mileage_abs,
             mileage_dashboard=mileage_dashboard,

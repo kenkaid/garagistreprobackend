@@ -7,9 +7,55 @@ from api.models import (
 )
 
 class UserSerializer(serializers.ModelSerializer):
+    active_subscription = serializers.SerializerMethodField()
+    subscription_tier = serializers.CharField(read_only=True)
+    is_trial = serializers.SerializerMethodField()
+    trial_days_remaining = serializers.SerializerMethodField()
+    has_vehicle = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'phone', 'is_mechanic', 'user_type', 'shop_name', 'location']
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name', 'phone',
+            'is_mechanic', 'user_type', 'shop_name', 'location',
+            'active_subscription', 'subscription_tier', 'is_trial', 'trial_days_remaining', 'has_vehicle'
+        ]
+
+    def get_active_subscription(self, obj):
+        sub = obj.active_subscription
+        if sub:
+            return SubscriptionSerializer(sub, context=self.context).data
+        return None
+
+    def get_is_trial(self, obj):
+        sub = obj.active_subscription
+        return sub.plan.tier == 'TRIAL' if sub and sub.plan else False
+
+    def get_trial_days_remaining(self, obj):
+        sub = obj.active_subscription
+        if sub and sub.plan and sub.plan.tier == 'TRIAL':
+            from django.utils import timezone
+            import math
+            remaining = sub.end_date - timezone.now()
+            # On utilise ceil pour que s'il reste 13j et 23h, on affiche 14j
+            total_seconds = remaining.total_seconds()
+            if total_seconds > 0:
+                days = math.ceil(total_seconds / 86400)
+                # Si l'utilisateur vient de s'abonner (ex: 14 jours), on s'assure de ne pas afficher 13
+                # à cause d'une micro-seconde de décalage.
+                # On compare avec la durée du plan si c'est très proche
+                plan_duration = sub.plan.duration_days
+                if abs(days - plan_duration) <= 1 and total_seconds > (plan_duration - 1) * 86400:
+                    return plan_duration
+                return days
+        return 0
+
+    def get_has_vehicle(self, obj):
+        if obj.user_type == 'INDIVIDUAL':
+            return obj.personal_vehicles.exists()
+        if obj.user_type == 'FLEET_OWNER':
+            return obj.fleet_vehicles.exists()
+        return False
 
 class VehicleModelSerializer(serializers.ModelSerializer):
     class Meta:
@@ -36,56 +82,109 @@ class RegisterSerializer(serializers.ModelSerializer):
         user.set_password(password)
         # On synchronise is_mechanic pour la compatibilité
         user.is_mechanic = (user_type == 'MECHANIC')
+
+        # Initialisation du shop_name et location
+        if user_type == 'MECHANIC':
+            user.shop_name = shop_name or f"Garage de {user.first_name or user.username}"
+            user.location = location or "Non précisée"
+        elif user_type == 'FLEET_OWNER':
+            user.shop_name = shop_name or f"Flotte de {user.first_name or user.username}"
+            user.location = location or "Non précisée"
+        else:
+            user.shop_name = shop_name
+            user.location = location
+
         user.save()
 
         # Création automatique du profil mécanicien si c'est un mécanicien
         if user_type == 'MECHANIC':
             Mechanic.objects.create(
                 user=user,
-                shop_name=shop_name or f"Garage de {user.first_name or user.username}",
-                location=location or "Non précisée"
+                shop_name=user.shop_name,
+                location=user.location
             )
-            # On synchronise aussi sur l'utilisateur pour la centralisation
-            user.shop_name = shop_name or f"Garage de {user.first_name or user.username}"
-            user.location = location or "Non précisée"
-            user.save()
-        elif user_type == 'FLEET_OWNER':
-            # Le shop_name reçu pour un propriétaire est considéré comme le nom de sa flotte
-            user.shop_name = shop_name or f"Flotte de {user.first_name or user.username}"
-            user.location = location or "Non précisée"
-            user.save()
+
+        # Activation automatique de la période d'essai pour tous les types d'utilisateurs
+        from api.services.subscriptions import SubscriptionService
+        SubscriptionService.activate_trial(user)
 
         return user
 
 class MechanicSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
-    first_name = serializers.CharField(source='user.first_name', required=False)
-    last_name = serializers.CharField(source='user.last_name', required=False)
-    email = serializers.CharField(source='user.email', required=False)
-    phone = serializers.CharField(source='user.phone', required=False)
+    first_name = serializers.CharField(source='user.first_name', required=False, allow_blank=True)
+    last_name = serializers.CharField(source='user.last_name', required=False, allow_blank=True)
+    email = serializers.CharField(source='user.email', required=False, allow_blank=True)
+    phone = serializers.CharField(source='user.phone', required=False, allow_blank=True)
     subscription_tier = serializers.CharField(read_only=True)
+    is_trial = serializers.SerializerMethodField()
+    trial_days_remaining = serializers.SerializerMethodField()
+    active_subscription = serializers.SerializerMethodField()
 
     class Meta:
         model = Mechanic
-        fields = ['id', 'username', 'first_name', 'last_name', 'email', 'phone', 'shop_name', 'location', 'is_active', 'created_at', 'subscription_tier']
+        fields = [
+            'id', 'username', 'first_name', 'last_name', 'email', 'phone',
+            'shop_name', 'location', 'is_active', 'created_at',
+            'subscription_tier', 'is_trial', 'trial_days_remaining', 'active_subscription'
+        ]
+
+    def get_is_trial(self, obj):
+        sub = obj.user.active_subscription
+        return sub.plan.tier == 'TRIAL' if sub and sub.plan else False
+
+    def get_trial_days_remaining(self, obj):
+        sub = obj.user.active_subscription
+        if sub and sub.plan and sub.plan.tier == 'TRIAL':
+            from django.utils import timezone
+            import math
+            remaining = sub.end_date - timezone.now()
+            total_seconds = remaining.total_seconds()
+            if total_seconds > 0:
+                days = math.ceil(total_seconds / 86400)
+                plan_duration = sub.plan.duration_days
+                if abs(days - plan_duration) <= 1 and total_seconds > (plan_duration - 1) * 86400:
+                    return plan_duration
+                return days
+        return 0
+
+    def get_active_subscription(self, obj):
+        sub = obj.user.active_subscription
+        if sub:
+            return SubscriptionSerializer(sub, context=self.context).data
+        return None
 
     def update(self, instance, validated_data):
-        user_data = {
-            'first_name': validated_data.pop('first_name', instance.user.first_name),
-            'last_name': validated_data.pop('last_name', instance.user.last_name),
-            'email': validated_data.pop('email', instance.user.email),
-            'phone': validated_data.pop('phone', instance.user.phone),
-            'shop_name': validated_data.get('shop_name', instance.user.shop_name),
-            'location': validated_data.get('location', instance.user.location),
-        }
+        user_data = validated_data.pop('user', {})
         user = instance.user
 
-        # Mise à jour des champs de l'utilisateur lié
+        # Debug: pour voir ce qui arrive (utile en développement)
+        # print(f"DEBUG validated_data: {validated_data}")
+        # print(f"DEBUG user_data: {user_data}")
+
+        # Les champs avec source='user.field' se retrouvent dans validated_data['user']
+        # s'ils ont été validés correctement par DRF.
+
+        user_updated = False
+
+        # 1. Mise à jour des champs utilisateur (first_name, last_name, etc.)
         for attr, value in user_data.items():
             setattr(user, attr, value)
-        user.save()
+            user_updated = True
 
-        # Mise à jour des champs du mécanicien
+        # 2. Synchroniser aussi shop_name et location sur User
+        # Ces champs sont à la racine de validated_data car ils appartiennent au modèle Mechanic
+        if 'shop_name' in validated_data:
+            user.shop_name = validated_data['shop_name']
+            user_updated = True
+        if 'location' in validated_data:
+            user.location = validated_data['location']
+            user_updated = True
+
+        if user_updated:
+            user.save()
+
+        # 3. Mise à jour des champs du modèle Mechanic
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
@@ -159,6 +258,8 @@ class ScanSessionSerializer(serializers.ModelSerializer):
     ai_predictions = serializers.SerializerMethodField()
     safety_check = SafetyCheckSerializer(read_only=True)
     mileage_discrepancy = serializers.IntegerField(read_only=True)
+    health_score = serializers.IntegerField(read_only=True)
+    buying_recommendation = serializers.CharField(read_only=True)
 
     class Meta:
         model = ScanSession
@@ -167,6 +268,7 @@ class ScanSessionSerializer(serializers.ModelSerializer):
             'found_dtcs', 'actual_labor_cost', 'actual_parts_cost', 'is_completed',
             'total_cost', 'ai_predictions', 'safety_check',
             'mileage_ecu', 'mileage_abs', 'mileage_dashboard', 'mileage_discrepancy',
+            'health_score', 'buying_recommendation',
             'scan_type'
         ]
 
@@ -215,6 +317,16 @@ class ChangePasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError("L'ancien mot de passe est incorrect.")
         return value
 
+
+def get_description_html(obj):
+    description = obj.description
+    if isinstance(description, dict):
+        return description.get('html', '')
+    if hasattr(description, 'html'):
+        return description.html
+    return str(description)
+
+
 class UpcomingModuleSerializer(serializers.ModelSerializer):
     applicablePlans = SubscriptionPlanSerializer(source='applicable_plans', many=True, read_only=True)
     expectedReleaseDate = serializers.DateField(source='expected_release_date', read_only=True)
@@ -224,13 +336,6 @@ class UpcomingModuleSerializer(serializers.ModelSerializer):
         model = UpcomingModule
         fields = ['id', 'name', 'description_html', 'expected_release_date', 'expectedReleaseDate', 'applicable_plans', 'applicablePlans', 'is_active', 'created_at']
 
-    def get_description_html(self, obj):
-        description = obj.description
-        if isinstance(description, dict):
-            return description.get('html', '')
-        if hasattr(description, 'html'):
-            return description.html
-        return str(description)
 
 class WelcomeContentSerializer(serializers.ModelSerializer):
     imageUrl = serializers.SerializerMethodField()
@@ -264,6 +369,12 @@ class TelemetryDataSerializer(serializers.ModelSerializer):
 
 class PredictiveAlertSerializer(serializers.ModelSerializer):
     vehicle_plate = serializers.CharField(source='vehicle.license_plate', read_only=True)
+    vehicle_brand = serializers.CharField(source='vehicle.brand', read_only=True)
+    vehicle_model = serializers.CharField(source='vehicle.model', read_only=True)
+    vehicle_year = serializers.IntegerField(source='vehicle.year', read_only=True)
+    vehicle_owner = serializers.CharField(source='vehicle.owner_name', read_only=True)
+    alert_type_display = serializers.CharField(source='get_alert_type_display', read_only=True)
+    severity_display = serializers.CharField(source='get_severity_display', read_only=True)
 
     class Meta:
         model = PredictiveAlert

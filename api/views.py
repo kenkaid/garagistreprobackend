@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.authtoken.models import Token
 from api.models import (
-    Mechanic, Vehicle, DTCReference, ScanSession, SubscriptionPlan, 
-    Subscription, User, Payment, VehicleModel, GlobalSettings, 
+    Mechanic, Vehicle, DTCReference, ScanSession, SubscriptionPlan,
+    Subscription, User, Payment, VehicleModel, GlobalSettings,
     UpcomingModule, WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert
 )
 from api.serializers import (
@@ -13,6 +13,7 @@ from api.serializers import (
     RegisterSerializer, UserSerializer, VehicleModelSerializer, ChangePasswordSerializer, UpcomingModuleSerializer,
     WelcomeContentSerializer, IoTDeviceSerializer, TelemetryDataSerializer, PredictiveAlertSerializer
 )
+from api.serializers import RegisterSerializer, UserSerializer, ChangePasswordSerializer # Pour éviter les duplications si déjà présent
 from api.services.diagnostics import DiagnosticService
 from api.services.subscriptions import SubscriptionService
 
@@ -107,7 +108,7 @@ class RegisterView(generics.CreateAPIView):
                 user_data = UserSerializer(user).data
         else:
             user_data = UserSerializer(user).data
-        
+
         # S'assurer que le user_type est bien présent dans la réponse pour le frontend
         if 'user_type' not in user_data:
             user_data['user_type'] = user.user_type
@@ -134,45 +135,49 @@ class MechanicViewSet(viewsets.ModelViewSet):
         S'adapte selon le type d'utilisateur (MECHANIC ou FLEET_OWNER).
         """
         user = request.user
-        
+
         # Cas spécial pour les mécaniciens qui ont un profil étendu
         if user.user_type == 'MECHANIC':
             try:
                 mechanic = Mechanic.objects.get(user=user)
                 if request.method in ['PATCH', 'PUT']:
-                    serializer = self.get_serializer(mechanic, data=request.data, partial=(request.method == 'PATCH'))
-                    serializer.is_valid(raise_exception=True)
-                    serializer.save()
-                    data = serializer.data
+                    serializer = MechanicSerializer(mechanic, data=request.data, partial=(request.method == 'PATCH'))
+                    if serializer.is_valid():
+                        serializer.save()
+                        data = serializer.data
+                    else:
+                        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
                 else:
                     data = MechanicSerializer(mechanic).data
-                
+
                 if 'user_type' not in data:
                     data['user_type'] = user.user_type
                 return Response(data)
             except Mechanic.DoesNotExist:
                 pass # On retombe sur le cas User de base
 
-        # Pour les autres types d'utilisateurs
+        # Pour les autres types d'utilisateurs (INDIVIDUAL, FLEET_OWNER)
         if request.method in ['PATCH', 'PUT']:
             serializer = UserSerializer(user, data=request.data, partial=(request.method == 'PATCH'))
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-            data = serializer.data
+            if serializer.is_valid():
+                serializer.save()
+                data = serializer.data
+            else:
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         else:
             data = UserSerializer(user).data
-        
+
         # Compatibilité frontend : On s'assure que shop_name et location sont à la racine
         # même si ce n'est pas un objet Mechanic
         if 'shop_name' not in data:
             data['shop_name'] = user.shop_name
         if 'location' not in data:
             data['location'] = user.location
-        
+
         # S'assurer que le user_type est présent
         if 'user_type' not in data:
             data['user_type'] = user.user_type
-            
+
         return Response(data)
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
@@ -241,12 +246,16 @@ class MechanicViewSet(viewsets.ModelViewSet):
                 return Response({'error': 'plan_id et transaction_id sont requis'}, status=status.HTTP_400_BAD_REQUEST)
 
             plan = SubscriptionPlan.objects.get(id=plan_id)
-            subscription = SubscriptionService.change_subscription(
+            subscription, added_days = SubscriptionService.change_subscription(
                 mechanic, plan, transaction_id, duration_months, payment_method
             )
 
+            message = 'Plan d\'abonnement mis à jour avec succès'
+            if added_days > 0:
+                message += f". Nous avons ajouté {added_days} jours restants de votre période d'essai."
+
             return Response({
-                'message': 'Plan d\'abonnement mis à jour avec succès',
+                'message': message,
                 'subscription': SubscriptionSerializer(subscription).data
             })
         except Mechanic.DoesNotExist:
@@ -295,15 +304,46 @@ class VehicleViewSet(viewsets.ModelViewSet):
     lookup_field = 'license_plate'
 
     def get_queryset(self):
-        if self.request.user.is_authenticated:
-            if self.request.user.is_staff:
+        user = self.request.user
+        if user.is_authenticated:
+            if user.is_staff:
                 return Vehicle.objects.all()
+
+            if user.user_type == 'INDIVIDUAL':
+                return Vehicle.objects.filter(owner=user)
 
             # On montre les véhicules qui ont été scannés par ce mécanicien
             # OU les véhicules qu'il a recherchés par plaque (potentiellement)
             # Pour l'instant on garde ceux qu'il a scannés au moins une fois
-            return Vehicle.objects.filter(scansession__mechanic__user=self.request.user).distinct()
+            return Vehicle.objects.filter(scansession__mechanic__user=user).distinct()
         return Vehicle.objects.none()
+
+    def create(self, request, *args, **kwargs):
+        user = request.user
+        
+        # Pour les particuliers, on permet d'ajouter/lier un véhicule
+        if user.user_type == 'INDIVIDUAL':
+            vehicle_data = request.data.copy()
+            license_plate = vehicle_data.get('license_plate')
+            existing_vehicle = Vehicle.objects.filter(license_plate__iexact=license_plate).first()
+            
+            if existing_vehicle:
+                if existing_vehicle.owner and existing_vehicle.owner != user:
+                    return Response({'error': 'Ce véhicule est déjà associé à un autre compte.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                # On lie le véhicule existant à l'utilisateur
+                serializer = self.get_serializer(existing_vehicle, data=vehicle_data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save(owner=user)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            
+            # Création du nouveau véhicule
+            serializer = self.get_serializer(data=vehicle_data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(owner=user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        return super().create(request, *args, **kwargs)
 
     @action(detail=False, methods=['get'], url_path='by_plate/(?P<plate>[^/.]+)')
     def by_plate(self, request, plate=None):
@@ -424,7 +464,7 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                     scan.mileage_ecu = mileage_data.get('mileage_ecu', scan.mileage_ecu)
                     scan.mileage_abs = mileage_data.get('mileage_abs', scan.mileage_abs)
                     scan.mileage_dashboard = mileage_data.get('mileage_dashboard', scan.mileage_dashboard)
-                
+
                 scan.save()
 
                 if safety_data:
@@ -463,13 +503,13 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
             recent_scan.actual_labor_cost = actual_labor_cost
             recent_scan.actual_parts_cost = actual_parts_cost
             recent_scan.is_completed = is_completed
-            
+
             # Mise à jour expertise
             if mileage_data:
                 recent_scan.mileage_ecu = mileage_data.get('mileage_ecu', recent_scan.mileage_ecu)
                 recent_scan.mileage_abs = mileage_data.get('mileage_abs', recent_scan.mileage_abs)
                 recent_scan.mileage_dashboard = mileage_data.get('mileage_dashboard', recent_scan.mileage_dashboard)
-            
+
             recent_scan.save()
 
             if safety_data:
@@ -497,11 +537,11 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         scan = DiagnosticService.record_scan(
-            mechanic, 
-            vehicle_data, 
-            dtc_codes, 
-            notes, 
-            mileage_data=mileage_data, 
+            mechanic,
+            vehicle_data,
+            dtc_codes,
+            notes,
+            mileage_data=mileage_data,
             safety_data=safety_data,
             scan_type=scan_type
         )
@@ -518,6 +558,16 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
 class SubscriptionPlanViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = SubscriptionPlan.objects.all()
     serializer_class = SubscriptionPlanSerializer
+
+    def get_queryset(self):
+        """
+        Filtre les plans en fonction du type d'utilisateur connecté.
+        Si non connecté (pour l'accueil par ex), on peut montrer les plans par défaut (MECHANIC).
+        """
+        user = self.request.user
+        if user.is_authenticated:
+            return SubscriptionPlan.objects.filter(target_user_type=user.user_type).exclude(tier="TRIAL")
+        return SubscriptionPlan.objects.filter(target_user_type='MECHANIC').exclude(tier='TRIAL')
 
     @action(detail=True, methods=['get'])
     def get_quotation(self, request, pk=None):
@@ -565,8 +615,15 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
         try:
             plan = SubscriptionPlan.objects.get(id=plan_id)
-            subscription = SubscriptionService.activate_subscription(mechanic, plan, transaction_id)
-            return Response(SubscriptionSerializer(subscription).data, status=status.HTTP_201_CREATED)
+            subscription, added_days = SubscriptionService.activate_subscription(mechanic.user, plan, transaction_id)
+            
+            data = SubscriptionSerializer(subscription).data
+            if added_days > 0:
+                data['message'] = f"Votre abonnement a été activé. Nous avons ajouté {added_days} jours restants de votre période d'essai à votre nouvel abonnement."
+            else:
+                data['message'] = "Votre abonnement a été activé avec succès."
+                
+            return Response(data, status=status.HTTP_201_CREATED)
         except SubscriptionPlan.DoesNotExist:
             return Response({'error': 'Plan non trouvé'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
@@ -686,10 +743,10 @@ class TelemetryViewSet(viewsets.ModelViewSet):
                 is_resolved=False,
                 defaults={'message': "Tension batterie faible détectée. Risque de non-démarrage."}
             )
-        
+
         # 2. Vérification Siphonnage (simplifié: baisse brutale > 5% sans moteur tournant/vitesse)
         # Nécessiterait de comparer avec le record précédent.
-        
+
         # 3. Score conduite (accélérations brutales)
         accel_x = data.get('accel_x', 0)
         accel_y = data.get('accel_y', 0)
@@ -727,10 +784,10 @@ class FleetDashboardView(generics.RetrieveAPIView):
 
         vehicles = Vehicle.objects.filter(fleet_owner=user)
         total_vehicles = vehicles.count()
-        
+
         # Alertes actives
         active_alerts = PredictiveAlert.objects.filter(vehicle__in=vehicles, is_resolved=False).count()
-        
+
         # Positions actuelles (dernier ping de chaque device)
         fleet_status = []
         for v in vehicles:
@@ -747,4 +804,60 @@ class FleetDashboardView(generics.RetrieveAPIView):
             'total_vehicles': total_vehicles,
             'active_alerts_count': active_alerts,
             'fleet_status': fleet_status
+        })
+
+class PersonalDashboardView(generics.RetrieveAPIView):
+    """
+    Vue synthétique pour le tableau de bord Particulier (INDIVIDUAL).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        if user.user_type != 'INDIVIDUAL' and not user.is_staff:
+            return Response({"error": "Accès réservé aux particuliers"}, status=403)
+
+        # Un particulier a généralement un seul véhicule principal associé à son compte
+        vehicle = Vehicle.objects.filter(owner=user).first()
+
+        if not vehicle:
+            return Response({
+                "has_vehicle": False,
+                "message": "Aucun véhicule associé à votre compte personnel.",
+                "vehicle": None,
+                "last_ping": None,
+                "fuel_stats": {
+                    'current_level': 0,
+                    'avg_consumption': 0,
+                    'estimated_range': 0,
+                    'cost_last_month': 0,
+                },
+                "health_score": 0,
+                "active_alerts": [],
+                "location": None
+            })
+
+        # Données de télémétrie récentes
+        telemetry = TelemetryData.objects.filter(vehicle=vehicle).first()
+
+        # Alertes prédictives non résolues
+        alerts = PredictiveAlert.objects.filter(vehicle=vehicle, is_resolved=False)
+
+        # Calcul simulé de statistiques de consommation (à affiner avec les données réelles)
+        # On pourrait agréger les TelemetryData sur les 30 derniers jours
+        stats_fuel = {
+            'current_level': telemetry.fuel_level if telemetry else 0,
+            'avg_consumption': 7.2, # Valeur exemple en L/100km
+            'estimated_range': 450, # km
+            'cost_last_month': 45000, # FCFA exemple
+        }
+
+        return Response({
+            'has_vehicle': True,
+            'vehicle': VehicleSerializer(vehicle).data,
+            'last_ping': telemetry.timestamp if telemetry else None,
+            'fuel_stats': stats_fuel,
+            'health_score': 92, # Exemple, pourrait être calculé depuis le dernier ScanSession
+            'active_alerts': PredictiveAlertSerializer(alerts, many=True).data,
+            'location': {'lat': telemetry.latitude, 'lng': telemetry.longitude} if telemetry else None
         })

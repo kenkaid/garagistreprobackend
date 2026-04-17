@@ -6,19 +6,36 @@ from django_quill.fields import QuillField
 class User(AbstractUser):
     """
     Modèle utilisateur personnalisé.
-    Permet de gérer les administrateurs, les mécaniciens et les propriétaires de flottes.
+    Permet de gérer les administrateurs, les mécaniciens, les propriétaires de flottes et les particuliers.
     """
     USER_TYPE_CHOICES = [
         ('MECHANIC', 'Mécanicien / Garagiste'),
         ('FLEET_OWNER', 'Propriétaire / Gestionnaire de Flotte'),
+        ('INDIVIDUAL', 'Particulier / Personnel'),
     ]
     user_type = models.CharField(max_length=20, choices=USER_TYPE_CHOICES, default='MECHANIC')
     is_mechanic = models.BooleanField(default=True) # Gardé pour compatibilité
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
-    
+
     # Nouveaux champs pour centraliser les infos sans avoir besoin de profil séparé pour tous
     shop_name = models.CharField(max_length=150, blank=True, null=True, help_text="Nom du garage ou de la flotte")
     location = models.CharField(max_length=200, blank=True, null=True, help_text="Localisation géographique")
+    has_used_trial = models.BooleanField(default=False, help_text="Indique si l'utilisateur a déjà utilisé sa période d'essai")
+
+    @property
+    def active_subscription(self):
+        from api.models import Subscription
+        from django.utils import timezone
+        return Subscription.objects.filter(
+            user=self,
+            is_active=True,
+            end_date__gt=timezone.now()
+        ).first()
+
+    @property
+    def subscription_tier(self):
+        active = self.active_subscription
+        return active.plan.tier if active and active.plan else "NONE"
 
     def __str__(self):
         return f"{self.username} ({self.get_user_type_display()})"
@@ -51,22 +68,41 @@ class Mechanic(models.Model):
 
 # === ABONNEMENTS ET PAIEMENTS ===
 class SubscriptionPlan(models.Model):
+    USER_TYPE_CHOICES = [
+        ('MECHANIC', 'Mécanicien / Garagiste'),
+        ('FLEET_OWNER', 'Propriétaire / Gestionnaire de Flotte'),
+        ('INDIVIDUAL', 'Particulier / Personnel'),
+    ]
     PLAN_TIERS = [
         ('BASIC', 'Basique (Scans simples)'),
         ('PREMIUM', 'Premium (Scans + Historique)'),
         ('ULTIMATE', 'Ultimate (Scans + Historique + IA Predictif)'),
+        # Tiers spécifiques à la flotte
+        ('FLEET_BASIC', 'Flotte Basique'),
+        ('FLEET_PRO', 'Flotte Pro'),
+        # Tiers spécifiques aux particuliers
+        ('PERSONAL_BASIC', 'Personnel Basique'),
+        ('PERSONAL_PREMIUM', 'Personnel Premium'),
+        ('TRIAL', 'Période d\'Essai (Gratuit)'),
     ]
-    name = models.CharField(max_length=50) # ex: 'Mensuel', 'Annuel'
+    name = models.CharField(max_length=50) # ex: 'Mensuel', 'Annuel', 'Essai'
+    target_user_type = models.CharField(
+        max_length=20,
+        choices=USER_TYPE_CHOICES,
+        default='MECHANIC',
+        help_text="Type d'utilisateur ciblé par ce plan"
+    )
     tier = models.CharField(max_length=20, choices=PLAN_TIERS, default='BASIC')
     price = models.DecimalField(max_digits=10, decimal_places=2)
     duration_days = models.IntegerField()
     description = models.TextField()
 
     def __str__(self):
-        return f"{self.name} ({self.tier})"
+        return f"{self.name} ({self.tier}) - {self.get_target_user_type_display()}"
 
 class Subscription(models.Model):
-    mechanic = models.ForeignKey(Mechanic, on_delete=models.CASCADE, related_name='subscriptions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='subscriptions', null=True, blank=True)
+    mechanic = models.ForeignKey(Mechanic, on_delete=models.CASCADE, related_name='subscriptions_old', null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, on_delete=models.SET_NULL, null=True)
     start_date = models.DateTimeField(auto_now_add=True)
     end_date = models.DateTimeField()
@@ -114,6 +150,9 @@ class Vehicle(models.Model):
 
     # Lien vers le propriétaire de flotte (si applicable)
     fleet_owner = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='fleet_vehicles', limit_choices_to={'user_type': 'FLEET_OWNER'})
+
+    # Lien pour les particuliers (Propriétaire direct)
+    owner = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='personal_vehicles', limit_choices_to={'user_type': 'INDIVIDUAL'})
 
     def __str__(self):
         return f"{self.license_plate} ({self.brand} {self.model})"
@@ -271,8 +310,56 @@ class ScanSession(models.Model):
     SCAN_TYPES = [
         ('DIAGNOSTIC', 'Diagnostic initial'),
         ('VERIFICATION', 'Vérification après effacement'),
+        ('EXPERT', 'Expertise d\'occasion'),
     ]
     scan_type = models.CharField(max_length=20, choices=SCAN_TYPES, default='DIAGNOSTIC')
+
+    @property
+    def health_score(self):
+        """
+        Calcule un score de santé de 0 à 100 pour le véhicule.
+        """
+        score = 100
+
+        # 1. Fraude au kilométrage
+        discrepancy = self.mileage_discrepancy
+        if discrepancy > 5000:
+            score -= 50
+        elif discrepancy > 1000:
+            score -= 20
+
+        # 2. Sécurité (Airbags/Crash Data)
+        try:
+            safety = self.safety_check
+            if safety.crash_data_present or safety.is_airbag_deployed:
+                score -= 100 # Directement à 0 ou négatif pour signaler un danger majeur
+        except SafetyCheck.DoesNotExist:
+            pass
+
+        # 3. Codes défauts (DTC)
+        dtcs = self.found_dtcs.all()
+        for dtc in dtcs:
+            if dtc.severity == 'critical':
+                score -= 30
+            elif dtc.severity == 'high':
+                score -= 15
+            elif dtc.severity == 'medium':
+                score -= 5
+
+        return max(0, score)
+
+    @property
+    def buying_recommendation(self):
+        """
+        Donne une recommandation d'achat basée sur le score de santé.
+        """
+        score = self.health_score
+        if score >= 85:
+            return "ACHETER"
+        elif score >= 60:
+            return "NÉGOCIER"
+        else:
+            return "FUIR"
 
     def __str__(self):
         return f"Scan {self.vehicle.license_plate} - {self.date.strftime('%d/%m/%Y')}"
