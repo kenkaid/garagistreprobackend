@@ -381,6 +381,39 @@ class Command(BaseCommand):
 
             # === FORD SPÉCIFIQUES ===
             {
+                "code": "P0343",
+                "brand": "Ford",
+                "description": "Circuit du capteur de position d'arbre à cames 'A' - Entrée haute (Banc 1 ou capteur unique)",
+                "meaning": "Le calculateur moteur (PCM) détecte une tension trop élevée en provenance du capteur d'arbre à cames (CMP), indiquant une défaillance dans le circuit ou le capteur lui-même.",
+                "severity": "high",
+                "symptoms": json.dumps([
+                    "Voyant moteur (Check Engine) allumé",
+                    "Démarrage difficile ou moteur qui refuse de démarrer",
+                    "Ralenti instable ou moteur qui broute",
+                    "Perte de puissance et mauvaise accélération",
+                    "Moteur qui cale"
+                ]),
+                "probable_causes": json.dumps([
+                    "Capteur de position d'arbre à cames (CMP) défectueux",
+                    "Câblage endommagé, corrodé ou court-circuité (le fil de signal touche le 12V)",
+                    "Mauvaise connexion au niveau du connecteur du capteur",
+                    "Problème de mise à la terre du capteur",
+                    "Problème mécanique (ex: distribution décalée ou bague de capteur endommagée)",
+                    "Calculateur moteur (PCM/ECU) défectueux (rare)"
+                ]),
+                "suggested_solutions": json.dumps([
+                    "Inspecter le capteur et son câblage : Vérifiez les fils pour déceler des signes de frottement, de coupure ou de corrosion, particulièrement près du moteur où la chaleur est élevée",
+                    "Tester le connecteur : Utilisez un multimètre pour vérifier l'alimentation (généralement 5V ou 12V) et la masse sur le connecteur",
+                    "Remplacer le capteur CMP : Si le câblage est en bon état, le capteur est souvent en cause",
+                    "Vérifier la distribution : S'assurer que la courroie ou la chaîne de distribution n'est pas détendue ou décalée"
+                ]),
+                "tips": "Le code P0343 est souvent lié à des problèmes de faisceau électrique sous le capot chez Ford. Une fois la réparation effectuée, effacez les codes d'erreur avec un scanner OBD2.",
+                "warnings": "Une conduite prolongée avec ce code peut causer des ratés moteur et endommager le catalyseur.",
+                "est_labor_cost": 35000,
+                "est_part_price_local": 25000,
+                "est_part_price_import": 55000
+            },
+            {
                 "code": "P1260",
                 "brand": "Ford",
                 "description": "Vol de véhicule détecté - Antidémarrage",
@@ -481,8 +514,15 @@ class Command(BaseCommand):
                 defaults={
                     'description': data['description'],
                     'meaning': data['meaning'],
+                    'severity': data.get('severity', 'medium'),
+                    'symptoms': data.get('symptoms', None),
+                    'probable_causes': data.get('probable_causes', None),
+                    'suggested_solutions': data.get('suggested_solutions', None),
+                    'tips': data.get('tips', None),
+                    'warnings': data.get('warnings', None),
                     'est_labor_cost': data.get('est_labor_cost', 0),
                     'est_part_price_local': data.get('est_part_price_local', 0),
+                    'est_part_price_import': data.get('est_part_price_import', 0),
                 }
             )
             if created:

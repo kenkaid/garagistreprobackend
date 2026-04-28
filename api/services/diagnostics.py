@@ -1,11 +1,13 @@
-from api.models import ScanSession, Vehicle, DTCReference
+from api.models import ScanSession, Vehicle, DTCReference, ScanSessionDTC
 from api.services.ai_service import DTCModelAI
 
 class DiagnosticService:
     @staticmethod
-    def record_scan(mechanic, vehicle_data, dtc_codes, notes="", mileage_data=None, safety_data=None, scan_type='DIAGNOSTIC'):
+    def record_scan(mechanic, vehicle_data, dtc_codes, notes="", mileage_data=None, safety_data=None, scan_type='DIAGNOSTIC', owner=None):
         """
         Enregistre une session de diagnostic avec expertise optionnelle.
+        dtc_codes peut être une liste de chaînes ['P0101', ...]
+        ou une liste d'objets [{'code': 'P0101', 'status': 'confirmed'}, ...]
         """
         if not vehicle_data:
             vehicle_data = {'license_plate': 'INCONNU'}
@@ -13,24 +15,46 @@ class DiagnosticService:
         license_plate = vehicle_data.get('license_plate', 'INCONNU')
         brand = vehicle_data.get('brand', 'Inconnue')
 
-        # Mise à jour ou création du véhicule
+        # Mise à jour ou création du véhicule (insensitive à la casse pour la plaque)
+        # On normalise la plaque en majuscules pour éviter les doublons
+        license_plate = license_plate.upper()
+
+        defaults = {
+            'brand': brand,
+            'model': vehicle_data.get('model', 'Inconnu'),
+            'year': vehicle_data.get('year'),
+            'vin': vehicle_data.get('vin', ''),
+            'owner_name': vehicle_data.get('owner_name', ''),
+            'owner_phone': vehicle_data.get('owner_phone', ''),
+        }
+
+        # Si un propriétaire (INDIVIDUAL) est fourni, on le lie
+        if owner:
+            defaults['owner'] = owner
+
         vehicle, created = Vehicle.objects.update_or_create(
             license_plate=license_plate,
-            defaults={
-                'brand': brand,
-                'model': vehicle_data.get('model', 'Inconnu'),
-                'year': vehicle_data.get('year'),
-                'vin': vehicle_data.get('vin', ''),
-                'owner_name': vehicle_data.get('owner_name', ''),
-                'owner_phone': vehicle_data.get('owner_phone', ''),
-            }
+            defaults=defaults
         )
 
         # Ajout des codes DTC s'ils ne sont pas en base
         if not dtc_codes:
             dtc_codes = []
 
-        for code in dtc_codes:
+        # Normalisation des dtc_codes en liste de dicts
+        dtc_list = []
+        for item in dtc_codes:
+            if isinstance(item, str):
+                dtc_list.append({'code': item, 'status': 'confirmed'})
+            elif isinstance(item, dict):
+                dtc_list.append({
+                    'code': item.get('code'),
+                    'status': item.get('status', 'confirmed')
+                })
+
+        codes_only = [item['code'] for item in dtc_list if item.get('code')]
+
+        for code in codes_only:
             # On cherche d'abord si un code générique existe
             generic_ref = DTCReference.objects.filter(code=code, brand__isnull=True).first()
 
@@ -45,8 +69,8 @@ class DiagnosticService:
                 }
             )
 
-        # Prédiction des coûts via l'IA (On ignore les coûts si c'est une expertise pour ne pas fausser les stats)
-        predictions = DTCModelAI.predict_costs(dtc_codes, brand=brand) if scan_type != 'EXPERT' else {'estimated_labor': 0, 'estimated_parts_min': 0}
+        # Prédiction des coûts via l'IA
+        predictions = DTCModelAI.predict_costs(codes_only, brand=brand) if scan_type != 'EXPERT' else {'estimated_labor': 0, 'estimated_parts_min': 0}
 
         # Extraction des données de kilométrage
         mileage_ecu = mileage_data.get('mileage_ecu') if mileage_data else None
@@ -77,15 +101,20 @@ class DiagnosticService:
             )
 
         # On lie les DTC (Priorité au spécifique marque, sinon générique)
-        dtc_refs = []
-        for code in dtc_codes:
+        for item in dtc_list:
+            code = item['code']
+            status = item['status']
+
             ref = DTCReference.objects.filter(code=code, brand=brand).first()
             if not ref:
                 ref = DTCReference.objects.filter(code=code, brand__isnull=True).first()
-            if ref:
-                dtc_refs.append(ref)
 
-        scan_session.found_dtcs.set(dtc_refs)
+            if ref:
+                ScanSessionDTC.objects.get_or_create(
+                    scan_session=scan_session,
+                    dtc=ref,
+                    defaults={'status': status}
+                )
 
         return scan_session
 

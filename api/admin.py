@@ -4,12 +4,9 @@ from django.urls import path
 from django.shortcuts import render, redirect
 from django.db.models import Sum
 from django.utils import timezone
-from api.models import (
-    User, Mechanic, Vehicle, DTCReference, ScanSession, SubscriptionPlan,
-    Subscription, Payment, VehicleModel, GlobalSettings, UpcomingModule,
-    WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert
-)
 from api.services.subscriptions import SubscriptionService
+
+# --- CONFIGURATION DU SITE ADMIN ---
 
 class GaragisteAdminSite(admin.AdminSite):
     site_header = "Administration Garagiste Pro"
@@ -18,7 +15,7 @@ class GaragisteAdminSite(admin.AdminSite):
 
     def get_app_list(self, request, app_label=None):
         """
-        Custom app list to group models into 'Garagiste Pro' and 'Prévention des pannes'.
+        Custom app list to group models into 'Garagiste Pro', 'Prévention des pannes' and 'Configuration'.
         """
         app_dict = self._build_app_dict(request, app_label)
         if not app_dict:
@@ -27,13 +24,18 @@ class GaragisteAdminSite(admin.AdminSite):
         # List of models in each group
         garagiste_models = [
             'Mechanic', 'Vehicle', 'VehicleModel', 'DTCReference',
-            'ScanSession', 'SubscriptionPlan', 'Subscription', 'Payment'
+            'ScanSession', 'SubscriptionPlan', 'Subscription', 'Payment',
+            'Review'
         ]
         prevention_models = [
-            'IoTDevice', 'TelemetryData', 'PredictiveAlert'
+            'IoTDevice', 'TelemetryData', 'PredictiveAlert',
+            'MaintenanceReminder', 'RegionalEvent', 'AppNotification'
+        ]
+        store_models = [
+            'SparePartStore', 'SparePartCategory', 'SparePart'
         ]
         config_models = [
-            'User', 'GlobalSettings', 'UpcomingModule', 'WelcomeContent'
+            'User', 'GlobalSettings', 'UpcomingModule', 'WelcomeContent', 'Appointment', 'ChatMessage'
         ]
 
         # Extract all models from api app
@@ -80,7 +82,20 @@ class GaragisteAdminSite(admin.AdminSite):
                 'models': pp_models,
             })
 
-        # Group 3: Configuration & Contenu
+        # Group 3: Drive-to-Store
+        ds_models = []
+        for name in store_models:
+            data = get_model_data(name)
+            if data: ds_models.append(data)
+
+        if ds_models:
+            new_app_list.append({
+                'name': '🛒 Drive-to-Store',
+                'app_label': 'drive_to_store',
+                'models': ds_models,
+            })
+
+        # Group 4: Configuration & Contenu
         cc_models = []
         for name in config_models:
             data = get_model_data(name)
@@ -103,6 +118,52 @@ class GaragisteAdminSite(admin.AdminSite):
 
 admin_site = GaragisteAdminSite(name='garagiste_admin')
 
+# --- IMPORTS DES MODÈLES ---
+from api.models import (
+    User, Mechanic, Vehicle, DTCReference, ScanSession, SubscriptionPlan,
+    Subscription, Payment, VehicleModel, GlobalSettings, UpcomingModule,
+    WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert,
+    MaintenanceReminder, RegionalEvent, Appointment, AppNotification, ChatMessage,
+    SparePartStore, SparePartCategory, SparePart, Review
+)
+
+# --- CLASSES ADMIN ---
+
+@admin.register(ChatMessage, site=admin_site)
+class ChatMessageAdmin(admin.ModelAdmin):
+    list_display = ('sender', 'receiver', 'appointment', 'message_snippet', 'is_read', 'created_at')
+    list_filter = ('is_read', 'created_at')
+    search_fields = ('message', 'sender__username', 'receiver__username')
+    raw_id_fields = ('sender', 'receiver', 'appointment')
+
+    def message_snippet(self, obj):
+        return obj.message[:50] + '...' if len(obj.message) > 50 else obj.message
+    message_snippet.short_description = "Message"
+
+@admin.register(AppNotification, site=admin_site)
+class AppNotificationAdmin(admin.ModelAdmin):
+    list_display = ('title', 'user', 'notification_type', 'is_read', 'appointment', 'created_at')
+    list_filter = ('notification_type', 'is_read', 'created_at')
+    search_fields = ('title', 'message', 'user__username', 'appointment__client__username')
+    raw_id_fields = ('user', 'appointment')
+
+@admin.register(Appointment, site=admin_site)
+class AppointmentAdmin(admin.ModelAdmin):
+    list_display = ('client', 'mechanic', 'appointment_date', 'status', 'created_at')
+    list_filter = ('status', 'appointment_date')
+    search_fields = ('client__username', 'mechanic__shop_name', 'reason')
+    date_hierarchy = 'appointment_date'
+
+@admin.register(MaintenanceReminder, site=admin_site)
+class MaintenanceReminderAdmin(admin.ModelAdmin):
+    list_display = ('vehicle', 'reminder_type', 'title', 'due_date', 'is_completed')
+    list_filter = ('reminder_type', 'is_completed')
+    search_fields = ('vehicle__license_plate', 'title')
+
+@admin.register(RegionalEvent, site=admin_site)
+class RegionalEventAdmin(admin.ModelAdmin):
+    list_display = ('name', 'start_month', 'end_month')
+
 @admin.register(User, site=admin_site)
 class CustomUserAdmin(UserAdmin):
     fieldsets = UserAdmin.fieldsets + (
@@ -116,13 +177,14 @@ class CustomUserAdmin(UserAdmin):
     def subscription_status(self, obj):
         sub = obj.active_subscription
         if sub:
-            return f"{sub.plan.name} (jusqu'au {sub.end_date.strftime('%d/%m/%Y')})"
+            plan_name = sub.plan.name if sub.plan else "Plan inconnu"
+            end_date = sub.end_date.strftime('%d/%m/%Y') if sub.end_date else "?"
+            return f"{plan_name} (jusqu'au {end_date})"
         return "Aucun"
     subscription_status.short_description = "Abonnement Actif"
 
     def activate_trial_manually(self, request, queryset):
         for user in queryset:
-            # On réinitialise has_used_trial pour permettre la réactivation si besoin
             user.has_used_trial = False
             user.save()
             SubscriptionService.activate_trial(user)
@@ -199,9 +261,12 @@ class GlobalSettingsAdmin(admin.ModelAdmin):
         }
         return render(request, 'admin/api/dashboard.html', context)
 
-admin_site.register(Mechanic)
-admin_site.register(Vehicle)
-admin_site.register(VehicleModel)
+@admin.register(Review, site=admin_site)
+class ReviewAdmin(admin.ModelAdmin):
+    list_display = ('mechanic', 'user', 'rating', 'created_at')
+    list_filter = ('rating', 'created_at')
+    search_fields = ('mechanic__shop_name', 'user__username', 'comment')
+    raw_id_fields = ('mechanic', 'user', 'scan_session', 'appointment')
 
 @admin.register(DTCReference, site=admin_site)
 class DTCReferenceAdmin(admin.ModelAdmin):
@@ -209,15 +274,11 @@ class DTCReferenceAdmin(admin.ModelAdmin):
     list_filter = ('brand',)
     search_fields = ('code', 'description')
 
-admin_site.register(ScanSession)
 @admin.register(SubscriptionPlan, site=admin_site)
 class SubscriptionPlanAdmin(admin.ModelAdmin):
     list_display = ('name', 'target_user_type', 'tier', 'price', 'duration_days')
     list_filter = ('target_user_type', 'tier')
     search_fields = ('name', 'description')
-
-admin_site.register(Subscription)
-admin_site.register(Payment)
 
 @admin.register(IoTDevice, site=admin_site)
 class IoTDeviceAdmin(admin.ModelAdmin):
@@ -244,8 +305,68 @@ class UpcomingModuleAdmin(admin.ModelAdmin):
     search_fields = ('name', 'description')
     filter_horizontal = ('applicable_plans',)
 
+@admin.register(SparePartStore, site=admin_site)
+class SparePartStoreAdmin(admin.ModelAdmin):
+    list_display = ('name', 'location_name', 'phone', 'is_active')
+    search_fields = ('name', 'location_name')
+
+@admin.register(SparePartCategory, site=admin_site)
+class SparePartCategoryAdmin(admin.ModelAdmin):
+    list_display = ('name', 'description')
+    search_fields = ('name', 'description')
+    autocomplete_fields = ('compatible_dtcs',)
+
+@admin.register(SparePart, site=admin_site)
+class SparePartAdmin(admin.ModelAdmin):
+    list_display = ('name', 'category', 'store', 'price', 'brand', 'stock_status')
+    list_filter = ('category', 'store', 'stock_status')
+    search_fields = ('name', 'brand', 'category__name')
+    raw_id_fields = ('category', 'store')
+
 @admin.register(WelcomeContent, site=admin_site)
 class WelcomeContentAdmin(admin.ModelAdmin):
     list_display = ('title', 'order', 'is_active', 'created_at')
     list_editable = ('order', 'is_active')
     search_fields = ('title', 'description')
+
+@admin.register(Mechanic, site=admin_site)
+class MechanicAdmin(admin.ModelAdmin):
+    list_display = ('shop_name', 'user', 'is_expert', 'average_rating', 'review_count')
+    list_filter = ('is_expert',)
+    search_fields = ('shop_name', 'user__username', 'specialties')
+    raw_id_fields = ('user',)
+
+@admin.register(Vehicle, site=admin_site)
+class VehicleAdmin(admin.ModelAdmin):
+    list_display = ('license_plate', 'brand', 'model', 'year', 'owner')
+    list_filter = ('brand', 'year')
+    search_fields = ('license_plate', 'vin', 'owner__username', 'owner_name')
+    raw_id_fields = ('owner', 'fleet_owner')
+
+@admin.register(VehicleModel, site=admin_site)
+class VehicleModelAdmin(admin.ModelAdmin):
+    list_display = ('brand', 'model', 'year_start', 'year_end')
+    list_filter = ('brand',)
+    search_fields = ('brand', 'model')
+
+@admin.register(ScanSession, site=admin_site)
+class ScanSessionAdmin(admin.ModelAdmin):
+    list_display = ('vehicle', 'mechanic', 'scan_type', 'date', 'total_cost')
+    list_filter = ('scan_type', 'date')
+    search_fields = ('vehicle__license_plate', 'mechanic__shop_name')
+    raw_id_fields = ('vehicle', 'mechanic')
+
+@admin.register(Subscription, site=admin_site)
+class SubscriptionAdmin(admin.ModelAdmin):
+    list_display = ('user', 'plan', 'start_date', 'end_date', 'is_active')
+    list_filter = ('is_active', 'plan')
+    raw_id_fields = ('user', 'mechanic')
+
+@admin.register(Payment, site=admin_site)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ('transaction_id', 'subscription', 'amount', 'payment_method', 'status', 'payment_date')
+    list_filter = ('status', 'payment_method')
+    search_fields = ('transaction_id',)
+    raw_id_fields = ('subscription',)
+
+# Suppression des enregistrements simples redondants
