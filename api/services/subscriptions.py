@@ -11,20 +11,20 @@ class SubscriptionService:
         # On ne crée plus d'objet Subscription ici pour éviter de polluer le frontend
         # avec des abonnements inactifs. On stocke juste le paiement.
         from api.models import SubscriptionPlan
-        
+
         total_amount = plan.price * duration_months
-        
+
         # On crée le paiement sans lui lier de souscription pour le moment
         # On lie l'utilisateur via une propriété temporaire ou on adapte le modèle Payment
         # Alternative: Créer la souscription MAIS ne pas la renvoyer dans le get_queryset si is_active=False
-        
+
         subscription = Subscription.objects.create(
             user=user,
             plan=plan,
             end_date=timezone.now(), # Date fictive
             is_active=False
         )
-        
+
         payment = Payment.objects.create(
             subscription=subscription,
             amount=total_amount,
@@ -32,13 +32,13 @@ class SubscriptionService:
             payment_method=payment_method,
             status='PENDING'
         )
-        
+
         return payment
 
     @staticmethod
     def confirm_payment(payment, transaction_id):
         """
-        Confirme un paiement et active la souscription associée.
+        Confirme un paiement et active ou prolonge la souscription associée.
         """
         if payment.status == 'SUCCESS':
             return payment.subscription
@@ -46,28 +46,102 @@ class SubscriptionService:
         subscription = payment.subscription
         user = subscription.user
         plan = subscription.plan
-        
-        # Calcul de la durée (logique similaire à activate_subscription)
-        active_sub = Subscription.objects.filter(user=user, is_active=True).exclude(id=subscription.id).first()
+
+        # On s'assure de travailler avec l'objet User
+        user_obj = getattr(user, 'user', user)
+
+        # On cherche le profil mécanicien
+        mechanic_obj = None
+        if user_obj.user_type == 'MECHANIC':
+            from api.models import Mechanic
+            mechanic_obj = Mechanic.objects.filter(user=user_obj).first()
+
+        # Récupération de l'abonnement actif actuel (avant d'activer celui-ci)
+        active_sub = user_obj.active_subscription
+
+        # Si on a déjà un abonnement actif au même plan, et que ce n'est PAS celui-ci
+        if active_sub and active_sub.plan == plan and active_sub.id != subscription.id:
+            # On transfère la durée du paiement en attente vers l'abonnement actif existant
+            duration_months = 1
+            if plan.price > 0:
+                duration_months = int(payment.amount / plan.price)
+
+            duration_days = (duration_months * 30)
+            active_sub.end_date = active_sub.end_date + timedelta(days=duration_days)
+            active_sub.is_active = True
+
+            # Liaison mécanicien si manquante
+            if mechanic_obj and not active_sub.mechanic:
+                active_sub.mechanic = mechanic_obj
+
+            active_sub.save()
+
+            # On met à jour le paiement pour pointer vers l'abonnement prolongé
+            payment.subscription = active_sub
+            payment.status = 'SUCCESS'
+            payment.transaction_id = transaction_id
+            payment.save()
+
+            # On supprime la souscription temporaire "PENDING" inutile
+            subscription.delete()
+
+            return active_sub
+
+        # Sinon (Changement de plan ou pas d'abonnement actif), on suit la logique normale
         trial_days_remaining = 0
-        if active_sub and active_sub.plan and active_sub.plan.tier == 'TRIAL':
-            remaining = active_sub.end_date - timezone.now()
-            total_seconds = remaining.total_seconds()
-            if total_seconds > 0:
-                trial_days_remaining = int(total_seconds // 86400)
+        prorata_days_bonus = 0
+
+        if active_sub and active_sub.plan:
+            # CAS 1: Fin de période d'essai
+            if active_sub.plan.tier == 'TRIAL':
+                remaining = active_sub.end_date - timezone.now()
+                total_seconds = remaining.total_seconds()
+                if total_seconds > 0:
+                    trial_days_remaining = int(total_seconds // 86400)
+
+            # CAS 2: Changement de plan payant (Calcul au prorata)
+            elif active_sub.is_active and active_sub.plan.price > 0:
+                # On calcule la valeur restante du plan actuel
+                now = timezone.now()
+                if active_sub.end_date > now:
+                    # Durée totale de l'abonnement en cours (approximée par le dernier paiement ou date de début)
+                    # Pour faire simple et robuste, on utilise la différence entre start_date et end_date
+                    total_duration = active_sub.end_date - active_sub.start_date
+                    remaining_duration = active_sub.end_date - now
+
+                    if total_duration.total_seconds() > 0:
+                        # Valeur résiduelle en pourcentage du temps restant
+                        residual_ratio = remaining_duration.total_seconds() / total_duration.total_seconds()
+
+                        # On calcule combien de jours "équivalents" cela représente sur le NOUVEAU plan
+                        # Exemple: s'il reste 10€ de valeur et que le nouveau plan coûte 1€/jour, on donne 10 jours
+                        # Nouveau prix journalier basé sur la durée prévue du plan
+                        # Si le plan dure 30 jours, on divise par 30. S'il dure 365, par 365.
+                        new_daily_price = float(plan.price) / float(plan.duration_days) if plan.duration_days > 0 else 0
+
+                        if new_daily_price > 0:
+                            # Valeur résiduelle basée sur le prix total de l'ancien plan (au moment de sa création)
+                            old_total_value = float(active_sub.plan.price)
+                            residual_value = old_total_value * residual_ratio
+                            prorata_days_bonus = int(residual_value / new_daily_price)
 
         # Désactiver les anciens abonnements
-        Subscription.objects.filter(user=user, is_active=True).exclude(id=subscription.id).update(is_active=False)
+        Subscription.objects.filter(user=user_obj, is_active=True).exclude(id=subscription.id).update(is_active=False)
+        Subscription.objects.filter(mechanic__user=user_obj, is_active=True).exclude(id=subscription.id).update(is_active=False)
 
-        # Calcul de la nouvelle date de fin (basé sur 30 jours par mois par défaut pour l'instant)
-        # On pourrait passer duration_months si on le stockait, ici on suppose 1 mois par défaut ou on le déduit du montant
+        # Calcul de la nouvelle date de fin
         duration_months = 1
         if plan.price > 0:
             duration_months = int(payment.amount / plan.price)
-            
-        duration_days = (duration_months * 30) + trial_days_remaining
+
+        duration_days = (duration_months * 30) + trial_days_remaining + prorata_days_bonus
         subscription.end_date = timezone.now() + timedelta(days=duration_days)
         subscription.is_active = True
+
+        # S'assurer que le mécanicien est lié
+        if mechanic_obj:
+            subscription.mechanic = mechanic_obj
+
         subscription.save()
 
         # Mettre à jour le paiement
@@ -123,30 +197,91 @@ class SubscriptionService:
     @staticmethod
     def activate_subscription(user, plan, transaction_id, duration_months=1, payment_method='WAVE'):
         """
-        Crée une nouvelle souscription après paiement réussi.
+        Active ou prolonge une souscription après paiement réussi.
+        Si l'utilisateur a déjà un abonnement actif au MÊME plan, on le prolonge.
+        Sinon, on crée une nouvelle souscription et on désactive les anciennes.
         La durée est calculée en mois (30 jours par mois).
-        Désactive automatiquement toute souscription active précédente.
-        Si l'utilisateur est en période d'essai, on ajoute les jours restants.
         """
-        active_sub = Subscription.objects.filter(user=user, is_active=True).first()
+        # On s'assure de travailler avec l'objet User pour la recherche d'abonnement actif
+        user_obj = getattr(user, 'user', user)
+
+        # On essaie de voir si on a un objet profil (Mechanic)
+        mechanic_obj = None
+        if hasattr(user, 'shop_name') and not hasattr(user, 'user_type'): # C'est déjà un Mechanic
+            mechanic_obj = user
+        elif user_obj.user_type == 'MECHANIC':
+            # On cherche le profil mécanicien associé à cet utilisateur
+            from api.models import Mechanic
+            mechanic_obj = Mechanic.objects.filter(user=user_obj).first()
+
+        # Récupération de l'abonnement actif via la propriété centralisée
+        active_sub = user_obj.active_subscription
+
+        # CAS 1: Prolongation du même plan
+        if active_sub and active_sub.plan == plan and active_sub.is_active:
+            # On s'assure que l'abonnement actif est bien lié au mécanicien s'il existe
+            if mechanic_obj and not active_sub.mechanic:
+                active_sub.mechanic = mechanic_obj
+                active_sub.save()
+
+            # On prolonge l'abonnement existant
+            duration_days = (duration_months * 30)
+            active_sub.end_date = active_sub.end_date + timedelta(days=duration_days)
+            active_sub.is_active = True # Sécurité au cas où
+            active_sub.save()
+
+            # Enregistrement du paiement
+            total_amount = plan.price * duration_months
+            Payment.objects.create(
+                subscription=active_sub,
+                amount=total_amount,
+                transaction_id=transaction_id,
+                payment_method=payment_method,
+                status='SUCCESS'
+            )
+            return active_sub, 0
+
+        # CAS 2: Nouveau plan ou plan différent (ou essai vers premium)
         trial_days_remaining = 0
-        if active_sub and active_sub.plan and active_sub.plan.tier == 'TRIAL':
-            remaining = active_sub.end_date - timezone.now()
-            # On utilise total_seconds pour avoir une précision à la seconde près
-            total_seconds = remaining.total_seconds()
-            if total_seconds > 0:
-                # On arrondit à l'entier supérieur pour ne pas perdre de jours
-                trial_days_remaining = int(total_seconds // 86400)
+        prorata_days_bonus = 0
 
-        # Désactiver les abonnements actuels pour garantir un seul abonnement actif
-        Subscription.objects.filter(user=user, is_active=True).update(is_active=False)
+        if active_sub and active_sub.plan:
+            # CAS 2.1: Fin de période d'essai
+            if active_sub.plan.tier == 'TRIAL':
+                remaining = active_sub.end_date - timezone.now()
+                total_seconds = remaining.total_seconds()
+                if total_seconds > 0:
+                    trial_days_remaining = int(total_seconds // 86400)
 
-        duration_days = (duration_months * 30) + trial_days_remaining
+            # CAS 2.2: Changement de plan payant (Calcul au prorata)
+            elif active_sub.is_active and active_sub.plan.price > 0:
+                now = timezone.now()
+                if active_sub.end_date > now:
+                    total_duration = active_sub.end_date - active_sub.start_date
+                    remaining_duration = active_sub.end_date - now
+
+                    if total_duration.total_seconds() > 0:
+                        residual_ratio = remaining_duration.total_seconds() / total_duration.total_seconds()
+                        new_daily_price = float(plan.price) / float(plan.duration_days) if plan.duration_days > 0 else 0
+                        
+                        if new_daily_price > 0:
+                            # On se base sur le prix total de l'ancien plan
+                            old_total_value = float(active_sub.plan.price)
+                            residual_value = old_total_value * residual_ratio
+                            prorata_days_bonus = int(residual_value / new_daily_price)
+
+        # Désactiver TOUS les abonnements actuels pour cet utilisateur
+        Subscription.objects.filter(user=user_obj, is_active=True).update(is_active=False)
+        Subscription.objects.filter(mechanic__user=user_obj, is_active=True).update(is_active=False)
+
+        duration_days = (duration_months * 30) + trial_days_remaining + prorata_days_bonus
         end_date = timezone.now() + timedelta(days=duration_days)
         total_amount = plan.price * duration_months
 
+        # Création de la souscription. On lie à la fois User et Mechanic si possible
         subscription = Subscription.objects.create(
-            user=user,
+            user=user_obj,
+            mechanic=mechanic_obj,
             plan=plan,
             end_date=end_date,
             is_active=True
@@ -161,11 +296,10 @@ class SubscriptionService:
                 status='SUCCESS'
             )
         except Exception as e:
-            # Si le paiement échoue (ex: transaction_id en double), on annule la souscription
             subscription.delete()
             raise e
 
-        return subscription, trial_days_remaining
+        return subscription, (trial_days_remaining + prorata_days_bonus)
 
     @staticmethod
     def is_subscription_valid(user):
@@ -183,6 +317,4 @@ class SubscriptionService:
         """
         Bascule vers un nouveau plan d'abonnement.
         """
-        # Si on passe un objet Mechanic ou FleetOwner au lieu d'un User, on récupère le User
-        user_obj = getattr(user, 'user', user)
-        return SubscriptionService.activate_subscription(user_obj, new_plan, transaction_id, duration_months, payment_method)
+        return SubscriptionService.activate_subscription(user, new_plan, transaction_id, duration_months, payment_method)

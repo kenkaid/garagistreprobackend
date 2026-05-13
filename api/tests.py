@@ -162,7 +162,7 @@ class AdvancedExpertiseTestCase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='expert_mech', password='password123')
         self.mechanic = Mechanic.objects.create(user=self.user, shop_name="Expert Garage", location="Abidjan")
-        
+
     def test_record_scan_with_mileage_and_safety(self):
         """Teste l'enregistrement d'un scan avec données de kilométrage et de sécurité."""
         vehicle_data = {'license_plate': 'EXPERT01', 'brand': 'Toyota'}
@@ -178,17 +178,17 @@ class AdvancedExpertiseTestCase(TestCase):
             'srs_module_status': 'OK',
             'notes': 'Trace d\'impact ancien détectée dans le module SRS'
         }
-        
+
         scan = DiagnosticService.record_scan(
-            self.mechanic, vehicle_data, dtc_codes, 
+            self.mechanic, vehicle_data, dtc_codes,
             mileage_data=mileage_data, safety_data=safety_data
         )
-        
+
         # Vérification kilométrage
         self.assertEqual(scan.mileage_ecu, 125000)
         self.assertEqual(scan.mileage_dashboard, 120000)
         self.assertEqual(scan.mileage_discrepancy, 5000)
-        
+
         # Vérification sécurité
         from api.models import SafetyCheck
         safety = SafetyCheck.objects.get(scan_session=scan)
@@ -198,11 +198,11 @@ class AdvancedExpertiseTestCase(TestCase):
     def test_scan_types(self):
         """Teste la distinction entre diagnostic et vérification."""
         vehicle_data = {'license_plate': 'TYPE_TEST', 'brand': 'BMW'}
-        
+
         # Scan initial
         scan1 = DiagnosticService.record_scan(self.mechanic, vehicle_data, ["P0101"], scan_type='DIAGNOSTIC')
         self.assertEqual(scan1.scan_type, 'DIAGNOSTIC')
-        
+
         # Scan de vérification
         scan2 = DiagnosticService.record_scan(self.mechanic, vehicle_data, [], scan_type='VERIFICATION')
         self.assertEqual(scan2.scan_type, 'VERIFICATION')
@@ -229,17 +229,44 @@ class UpcomingModuleTestCase(TestCase):
         self.module.applicable_plans.add(self.plan)
 
     def test_upcoming_modules_api(self):
-        """Teste l'API des modules à venir."""
+        """Teste l'API des modules à venir avec filtrage par plan."""
         url = reverse('upcoming-module-list')
-        response = self.client.get(url)
 
+        # 1. Sans abonnement, le module (lié à Premium) ne doit pas apparaître
+        response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 0)
+
+        # 2. Créer un module public (sans plans)
+        from api.models import UpcomingModule
+        UpcomingModule.objects.create(
+            name="Module Public",
+            expected_release_date=self.module.expected_release_date,
+            is_active=True
+        )
+        response = self.client.get(url)
         self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['name'], "Module Test")
-        self.assertIn('description_html', response.data[0])
-        self.assertEqual(response.data[0]['description_html'], '<p>Test</p>')
-        self.assertEqual(len(response.data[0]['applicablePlans']), 1)
-        self.assertEqual(response.data[0]['applicablePlans'][0]['tier'], "PREMIUM")
+        self.assertEqual(response.data[0]['name'], "Module Public")
+
+        # 3. Ajouter un abonnement Premium à l'utilisateur
+        from api.models import Subscription
+        from django.utils import timezone
+        from datetime import timedelta
+        Subscription.objects.create(
+            user=self.user,
+            plan=self.plan,
+            end_date=timezone.now() + timedelta(days=30),
+            is_active=True
+        )
+
+        # On doit maintenant voir les 2 modules (Public + Premium)
+        response = self.client.get(url)
+        self.assertEqual(len(response.data), 2)
+
+        # Vérifier que le module Premium est présent
+        names = [m['name'] for m in response.data]
+        self.assertIn("Module Test", names)
+        self.assertIn("Module Public", names)
 
 class FleetRegistrationTestCase(TestCase):
     def setUp(self):
@@ -264,16 +291,16 @@ class FleetRegistrationTestCase(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['user']['user_type'], 'FLEET_OWNER')
-        
+
         # Vérifier que l'utilisateur a bien été créé
         user = User.objects.get(username="fleet_test_user")
         self.assertEqual(user.user_type, 'FLEET_OWNER')
         self.assertFalse(user.is_mechanic)
-        
+
         # Vérifier que le shop_name a été utilisé comme first_name s'il était vide (notre logique dans le serializer)
         # En fait dans notre payload on a mis "Jean", donc first_name devrait rester "Jean"
         self.assertEqual(user.first_name, "Jean")
-        
+
         # Tester avec first_name vide pour voir si shop_name est récupéré
         data["username"] = "fleet_test_user_2"
         data["phone"] = "+22500000000"
@@ -297,11 +324,11 @@ class FleetRegistrationTestCase(TestCase):
         }
         response = self.client.post(url, data, format='json')
         self.assertEqual(response.status_code, 201)
-        
+
         user = User.objects.get(username="mech_test_user")
         self.assertEqual(user.user_type, 'MECHANIC')
         self.assertTrue(user.is_mechanic)
-        
+
         # Vérifier le profil mécanicien
         mechanic = Mechanic.objects.get(user=user)
         self.assertEqual(mechanic.shop_name, "Garage Pro")

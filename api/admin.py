@@ -24,7 +24,7 @@ class GaragisteAdminSite(admin.AdminSite):
         # List of models in each group
         garagiste_models = [
             'Mechanic', 'Vehicle', 'VehicleModel', 'DTCReference',
-            'ScanSession', 'SubscriptionPlan', 'Subscription', 'Payment',
+            'ScanSession', 'SubscriptionPlan', 'Feature', 'Subscription', 'Payment',
             'Review'
         ]
         prevention_models = [
@@ -35,7 +35,7 @@ class GaragisteAdminSite(admin.AdminSite):
             'SparePartStore', 'SparePartCategory', 'SparePart'
         ]
         config_models = [
-            'User', 'GlobalSettings', 'UpcomingModule', 'WelcomeContent', 'Appointment', 'ChatMessage'
+            'User', 'GlobalSettings', 'UpcomingModule', 'WelcomeContent', 'Appointment', 'ChatMessage', 'TowTruck'
         ]
 
         # Extract all models from api app
@@ -124,10 +124,16 @@ from api.models import (
     Subscription, Payment, VehicleModel, GlobalSettings, UpcomingModule,
     WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert,
     MaintenanceReminder, RegionalEvent, Appointment, AppNotification, ChatMessage,
-    SparePartStore, SparePartCategory, SparePart, Review
+    SparePartStore, SparePartCategory, SparePart, Review, TowTruck, Feature
 )
 
 # --- CLASSES ADMIN ---
+
+@admin.register(TowTruck, site=admin_site)
+class TowTruckAdmin(admin.ModelAdmin):
+    list_display = ('name', 'phone', 'city', 'district', 'is_available')
+    list_filter = ('city', 'is_available')
+    search_fields = ('name', 'phone', 'district')
 
 @admin.register(ChatMessage, site=admin_site)
 class ChatMessageAdmin(admin.ModelAdmin):
@@ -279,6 +285,12 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
     list_display = ('name', 'target_user_type', 'tier', 'price', 'duration_days')
     list_filter = ('target_user_type', 'tier')
     search_fields = ('name', 'description')
+    filter_horizontal = ('features',)
+
+@admin.register(Feature, site=admin_site)
+class FeatureAdmin(admin.ModelAdmin):
+    list_display = ('name', 'code', 'price', 'is_active')
+    search_fields = ('name', 'code')
 
 @admin.register(IoTDevice, site=admin_site)
 class IoTDeviceAdmin(admin.ModelAdmin):

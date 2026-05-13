@@ -7,7 +7,7 @@ from api.views import (
     WelcomeContentViewSet, IoTDeviceViewSet, TelemetryViewSet, PredictiveAlertViewSet, FleetDashboardView,
     PersonalDashboardView, WavePaymentInitView, WaveWebhookView, AppConfigView, AppointmentViewSet,
     GaragesListView, ClientsSearchView, MaintenanceReminderViewSet, AppNotificationViewSet, ChatMessageViewSet,
-    ReviewViewSet, SparePartStoreViewSet, SparePartViewSet
+    ReviewViewSet, SparePartStoreViewSet, SparePartViewSet, TowTruckViewSet
 )
 
 router = DefaultRouter()
@@ -16,6 +16,7 @@ router.register(r'messages', ChatMessageViewSet, basename='message')
 router.register(r'notifications', AppNotificationViewSet, basename='notification')
 router.register(r'reminders', MaintenanceReminderViewSet, basename='reminder')
 router.register(r'reviews', ReviewViewSet, basename='review')
+router.register(r'tow-trucks', TowTruckViewSet, basename='tow-truck')
 router.register(r'users', MechanicViewSet, basename='user')
 router.register(r'mechanics', MechanicViewSet, basename='mechanic')
 router.register(r'vehicles', VehicleViewSet, basename='vehicle')

@@ -26,16 +26,34 @@ class User(AbstractUser):
     def active_subscription(self):
         from api.models import Subscription
         from django.utils import timezone
-        return Subscription.objects.filter(
+        
+        # PRIORITÉ 1: Abonnement lié via User
+        sub = Subscription.objects.filter(
             user=self,
             is_active=True,
             end_date__gt=timezone.now()
         ).first()
+        
+        # PRIORITÉ 2: Abonnement lié via profil mécanicien
+        if not sub and self.user_type == 'MECHANIC':
+            try:
+                sub = Subscription.objects.filter(
+                    mechanic=self.mechanic_profile,
+                    is_active=True,
+                    end_date__gt=timezone.now()
+                ).first()
+            except:
+                pass
+        return sub
 
     @property
     def subscription_tier(self):
         active = self.active_subscription
         return active.plan.tier if active and active.plan else "NONE"
+
+    @property
+    def is_trial(self):
+        return self.subscription_tier == 'TRIAL'
 
     def __str__(self):
         return f"{self.username} ({self.get_user_type_display()})"
@@ -91,18 +109,31 @@ class Mechanic(models.Model):
 
     @property
     def active_subscription(self):
+        """
+        Récupère l'abonnement actif.
+        Priorité à l'abonnement lié directement au Mechanic, sinon celui de l'User.
+        """
         from api.models import Subscription
         from django.utils import timezone
-        return Subscription.objects.filter(
+        sub = Subscription.objects.filter(
             mechanic=self,
             is_active=True,
             end_date__gt=timezone.now()
         ).first()
+        
+        if not sub:
+            sub = self.user.active_subscription
+            
+        return sub
 
     @property
     def subscription_tier(self):
         active = self.active_subscription
         return active.plan.tier if active and active.plan else "NONE"
+
+    @property
+    def is_trial(self):
+        return self.subscription_tier == 'TRIAL'
 
     def __str__(self):
         return f"{self.user.username} - {self.shop_name}" if self.user else f"Mecha #{self.id}"
@@ -167,9 +198,28 @@ class SubscriptionPlan(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     duration_days = models.IntegerField()
     description = models.TextField()
+    features = models.ManyToManyField('Feature', blank=True, related_name='plans')
 
     def __str__(self):
         return f"{self.name} ({self.tier}) - {self.get_target_user_type_display()}"
+
+class Feature(models.Model):
+    """
+    Représente une fonctionnalité ou option spécifique de l'application.
+    """
+    name = models.CharField(max_length=100)
+    code = models.SlugField(max_length=100, unique=True, help_text="Code unique pour identifier la fonctionnalité dans le code (ex: scan_ia)")
+    description = models.TextField(blank=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0, help_text="Prix additionnel potentiel ou valeur de l'option")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+    class Meta:
+        verbose_name = "Fonctionnalité"
+        verbose_name_plural = "Fonctionnalités"
 
 class Subscription(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='subscriptions', null=True, blank=True)
@@ -381,11 +431,25 @@ class DTCReference(models.Model):
 
         def vulcanize(text):
             if not text: return text
+            import re
+            # 0. Suppression des mots en double
+            text = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', text, flags=re.IGNORECASE)
+            
+            # On définit d'abord les cas spécifiques pour éviter les doubles remplacements
+            text = re.sub(r"fuite d'air", "prise d'air (fuite d'air)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite de liquide", "fuite (ça coule)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite d'huile", "fuite d'huile (ça coule)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite de carburant", "fuite de carburant (ça coule)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite d'essence", "fuite d'essence (ça coule)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite de gasoil", "fuite de gasoil (ça coule)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite d'eau", "fuite d'eau (ça coule)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite de refroidissement", "fuite de refroidissement (ça coule)", text, flags=re.IGNORECASE)
+
             repls = [
                 (r'défectueux', 'gâté'), (r'défaillant', 'gâté'), (r'défaillance', 'problème'),
                 (r'dysfonctionnement', 'problème'), (r'endommagé', 'cassé ou gâté'),
                 (r'corrodé', 'rouillé'), (r'obstruction', 'bouché'), (r'obstrué', 'bouché'),
-                (r'fuite', 'fuite (ça coule)'), (r'remplacer', 'changer'), (r'inspection', 'regarder bien'),
+                (r'remplacer', 'changer'), (r'inspection', 'regarder bien'),
                 (r'inspecter', 'regarder bien'), (r'vérifier', 'contrôler'), (r'contrôle', 'contrôle'),
                 (r'nettoyage', 'nettoyer'), (r'nettoyer', 'nettoyer'), (r'ajustement', 'régler'),
                 (r'ajuster', 'régler'), (r'réparation', 'réparer'), (r'réparer', 'réparer'),
@@ -400,7 +464,12 @@ class DTCReference(models.Model):
                 (r'dû à', 'à cause de'), (r'cause probable', 'ce qui peut envoyer ça')
             ]
             for old, new in repls:
-                text = re.sub(old, new, text, flags=re.IGNORECASE)
+                # Utilisation de frontières de mots si possible, sinon simple re.sub
+                pattern = r'\b' + old + r'\b' if not old.startswith(r'(') else old
+                text = re.sub(pattern, new, text, flags=re.IGNORECASE)
+            
+            # Nettoyage final des répétitions
+            text = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', text, flags=re.IGNORECASE)
             return text
 
         if self.meaning: self.meaning = vulcanize(self.meaning)
@@ -713,3 +782,139 @@ class ChatMessage(models.Model):
 
     def __str__(self):
         return f"De {self.sender.username} à {self.receiver.username} ({self.created_at})"
+
+# === INTELLIGENCE ANALYTIQUE — BASELINE & HISTORIQUE ML ===
+
+class VehicleBaseline(models.Model):
+    """
+    Valeurs "normales" apprises pour un véhicule précis.
+    Calculées automatiquement à partir des sessions live.
+    Permet de détecter des écarts par rapport au comportement habituel du véhicule.
+    """
+    vehicle = models.OneToOneField(Vehicle, on_delete=models.CASCADE, related_name='baseline')
+    # Moyennes apprises (valeur centrale normale)
+    avg_rpm = models.FloatField(null=True, blank=True)
+    avg_coolant_temp = models.FloatField(null=True, blank=True)
+    avg_oil_temp = models.FloatField(null=True, blank=True)
+    avg_engine_load = models.FloatField(null=True, blank=True)
+    avg_voltage = models.FloatField(null=True, blank=True)
+    avg_fuel_trim_st = models.FloatField(null=True, blank=True)
+    avg_fuel_trim_lt = models.FloatField(null=True, blank=True)
+    avg_map_pressure = models.FloatField(null=True, blank=True)
+    avg_iat = models.FloatField(null=True, blank=True)
+    avg_throttle = models.FloatField(null=True, blank=True)
+    # Écarts-types appris (tolérance normale)
+    std_rpm = models.FloatField(null=True, blank=True)
+    std_coolant_temp = models.FloatField(null=True, blank=True)
+    std_engine_load = models.FloatField(null=True, blank=True)
+    std_voltage = models.FloatField(null=True, blank=True)
+    # Métadonnées d'apprentissage
+    sample_count = models.IntegerField(default=0, help_text="Nombre de lectures utilisées pour calculer la baseline")
+    last_updated = models.DateTimeField(auto_now=True)
+    is_mature = models.BooleanField(default=False, help_text="True si >= 500 lectures (baseline fiable)")
+
+    class Meta:
+        verbose_name = "Baseline véhicule"
+        verbose_name_plural = "Baselines véhicules"
+
+    def __str__(self):
+        return f"Baseline {self.vehicle.license_plate} ({self.sample_count} lectures)"
+
+
+class VehiclePIDHistory(models.Model):
+    """
+    Historique des lectures PID pour entraînement du modèle ML.
+    Chaque enregistrement = un snapshot complet de tous les PIDs à un instant T.
+    Labelisé 'anomaly' si une anomalie IA a été détectée à ce moment.
+    """
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name='pid_history')
+    timestamp = models.DateTimeField(auto_now_add=True)
+    # PIDs principaux
+    rpm = models.FloatField(null=True, blank=True)
+    coolant_temp = models.FloatField(null=True, blank=True)
+    oil_temp = models.FloatField(null=True, blank=True)
+    engine_load = models.FloatField(null=True, blank=True)
+    voltage = models.FloatField(null=True, blank=True)
+    speed = models.FloatField(null=True, blank=True)
+    throttle = models.FloatField(null=True, blank=True)
+    fuel_level = models.FloatField(null=True, blank=True)
+    fuel_trim_st = models.FloatField(null=True, blank=True)
+    fuel_trim_lt = models.FloatField(null=True, blank=True)
+    map_pressure = models.FloatField(null=True, blank=True)
+    iat = models.FloatField(null=True, blank=True)
+    o2_upstream = models.FloatField(null=True, blank=True)
+    o2_downstream = models.FloatField(null=True, blank=True)
+    maf = models.FloatField(null=True, blank=True)
+    # Label pour entraînement ML
+    has_anomaly = models.BooleanField(default=False, help_text="True si une anomalie IA a été détectée")
+    anomaly_severity = models.CharField(max_length=20, blank=True, help_text="critical/high/medium/low")
+    anomaly_codes = models.JSONField(default=list, help_text="Liste des codes DTC virtuels détectés")
+
+    class Meta:
+        verbose_name = "Historique PID"
+        verbose_name_plural = "Historiques PID"
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['vehicle', 'timestamp']),
+            models.Index(fields=['vehicle', 'has_anomaly']),
+        ]
+
+    def __str__(self):
+        status = "⚠️" if self.has_anomaly else "✓"
+        return f"{status} {self.vehicle.license_plate} — {self.timestamp.strftime('%d/%m/%Y %H:%M')}"
+
+
+class VehicleMLModel(models.Model):
+    """
+    Modèle ML entraîné pour un véhicule ou une famille de véhicules.
+    Stocke le modèle sérialisé (pickle) et ses métriques de performance.
+    """
+    SCOPE_CHOICES = [
+        ('VEHICLE', 'Véhicule spécifique'),
+        ('BRAND_MODEL', 'Marque + Modèle'),
+        ('GLOBAL', 'Modèle global'),
+    ]
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default='GLOBAL')
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, null=True, blank=True, related_name='ml_models')
+    brand = models.CharField(max_length=50, blank=True, help_text="Marque si scope=BRAND_MODEL")
+    model_name = models.CharField(max_length=50, blank=True, help_text="Modèle si scope=BRAND_MODEL")
+    # Modèle sérialisé
+    model_file = models.FileField(upload_to='ml_models/', null=True, blank=True)
+    algorithm = models.CharField(max_length=50, default='RandomForest')
+    # Métriques
+    accuracy = models.FloatField(null=True, blank=True)
+    precision = models.FloatField(null=True, blank=True)
+    recall = models.FloatField(null=True, blank=True)
+    f1_score = models.FloatField(null=True, blank=True)
+    training_samples = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=False, help_text="Activer pour utilisation en production")
+    trained_at = models.DateTimeField(auto_now_add=True)
+    version = models.CharField(max_length=20, default='1.0')
+
+    class Meta:
+        verbose_name = "Modèle ML"
+        verbose_name_plural = "Modèles ML"
+        ordering = ['-trained_at']
+
+    def __str__(self):
+        scope_label = self.vehicle.license_plate if self.vehicle else self.brand or 'Global'
+        return f"ML {self.algorithm} — {scope_label} v{self.version} ({'actif' if self.is_active else 'inactif'})"
+
+
+class TowTruck(models.Model):
+    name = models.CharField(max_length=200, verbose_name="Nom / Entreprise")
+    phone = models.CharField(max_length=20, verbose_name="Numéro de téléphone")
+    city = models.CharField(max_length=100, verbose_name="Ville")
+    district = models.CharField(max_length=100, verbose_name="Quartier", blank=True, null=True)
+    is_available = models.BooleanField(default=True, verbose_name="Disponible")
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Remorqueur"
+        verbose_name_plural = "🚀 Remorqueurs"
+        ordering = ['city', 'district']
+
+    def __str__(self):
+        return f"{self.name} ({self.city})"

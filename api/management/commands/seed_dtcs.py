@@ -84,7 +84,7 @@ class Command(BaseCommand):
                 "code": "P0171",
                 "brand": None,
                 "description": "Mélange trop pauvre (Ligne 1)",
-                "meaning": "Trop d'air ou pas assez d'essence entre dans le moteur. Cherchez une fuite d'air après le filtre ou un filtre à essence bouché.",
+                "meaning": "Trop d'air ou pas assez d'essence entre dans le moteur. Cherchez une prise d'air après le filtre ou un filtre à essence bouché.",
                 "est_labor_cost": 30000,
                 "est_part_price_local": 15000
             },

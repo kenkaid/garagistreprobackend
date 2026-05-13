@@ -10,7 +10,7 @@ from api.models import (
     Subscription, User, Payment, VehicleModel, GlobalSettings,
     UpcomingModule, WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert,
     Appointment, MaintenanceReminder, RegionalEvent, ChatMessage, Review,
-    SparePartStore, SparePart
+    SparePartStore, SparePart, TowTruck, VehicleBaseline, VehiclePIDHistory, VehicleMLModel
 )
 from api.serializers import (
     MechanicSerializer, VehicleSerializer, DTCReferenceSerializer,
@@ -19,8 +19,20 @@ from api.serializers import (
     WelcomeContentSerializer, IoTDeviceSerializer, TelemetryDataSerializer, PredictiveAlertSerializer,
     MaintenanceReminderSerializer, RegionalEventSerializer, AppointmentSerializer,
     AppNotificationSerializer, ChatMessageSerializer, ReviewSerializer,
-    SparePartStoreSerializer, SparePartSerializer
+    SparePartStoreSerializer, SparePartSerializer, TowTruckSerializer
 )
+
+class TowTruckViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = TowTruck.objects.filter(is_available=True)
+    serializer_class = TowTruckSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = TowTruck.objects.filter(is_available=True)
+        city = self.request.query_params.get('city')
+        if city:
+            queryset = queryset.filter(city__icontains=city)
+        return queryset
 from api.serializers import RegisterSerializer, UserSerializer, ChangePasswordSerializer # Pour éviter les duplications si déjà présent
 from api.services.diagnostics import DiagnosticService
 from api.services.subscriptions import SubscriptionService
@@ -271,7 +283,7 @@ class MechanicViewSet(viewsets.ModelViewSet):
 
         # Formule de Haversine pour filtrer par distance
         experts = Mechanic.objects.filter(is_expert=True, is_active=True, latitude__isnull=False, longitude__isnull=False)
-        
+
         nearby_mechanics = []
         # Pour les utilisateurs connectés, on cherche s'il y a des interventions notifiables
         user_vehicle = None
@@ -283,18 +295,18 @@ class MechanicViewSet(viewsets.ModelViewSet):
             if dist <= radius:
                 m_data = MechanicSerializer(m).data
                 m_data['distance'] = round(dist, 2)
-                
+
                 # Ajout des interventions notifiables
                 m_data['notifiable_scan_id'] = None
                 m_data['notifiable_appointment_id'] = None
-                
+
                 if user_vehicle:
                     last_scan = ScanSession.objects.filter(
                         vehicle=user_vehicle, mechanic=m, review__isnull=True
                     ).order_by('-date').first()
                     if last_scan:
                         m_data['notifiable_scan_id'] = last_scan.id
-                        
+
                     last_appt = Appointment.objects.filter(
                         vehicle=user_vehicle, mechanic=m, status='COMPLETED', review__isnull=True
                     ).order_by('-appointment_date').first()
@@ -361,45 +373,11 @@ class MechanicViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def change_plan(self, request):
         """
-        Permet au mécanicien de changer son plan d'abonnement.
-        Attend 'plan_id', 'transaction_id', 'duration_months' et 'payment_method'.
+        Redirection vers SubscriptionViewSet.change_plan
         """
-        try:
-            mechanic = Mechanic.objects.get(user=request.user)
-            plan_id = request.data.get('plan_id')
-            transaction_id = request.data.get('transaction_id')
-            duration_months = int(request.data.get('duration_months', 1))
-            payment_method = request.data.get('payment_method', 'WAVE')
-
-            if not plan_id or not transaction_id:
-                return Response({'error': 'plan_id et transaction_id sont requis'}, status=status.HTTP_400_BAD_REQUEST)
-
-            plan = SubscriptionPlan.objects.get(id=plan_id)
-            subscription, added_days = SubscriptionService.change_subscription(
-                mechanic, plan, transaction_id, duration_months, payment_method
-            )
-
-            message = 'Plan d\'abonnement mis à jour avec succès'
-            if added_days > 0:
-                message += f". Nous avons ajouté {added_days} jours restants de votre période d'essai."
-
-            return Response({
-                'message': message,
-                'subscription': SubscriptionSerializer(subscription).data
-            })
-        except Mechanic.DoesNotExist:
-            return Response({'error': 'Profil mécanicien non trouvé'}, status=status.HTTP_404_NOT_FOUND)
-        except SubscriptionPlan.DoesNotExist:
-            return Response({'error': 'Plan d\'abonnement non trouvé'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            import traceback
-            error_msg = str(e)
-            if "UNIQUE constraint failed" in error_msg or "transaction_id" in error_msg:
-                error_msg = "Cette transaction a déjà été utilisée. Veuillez vérifier votre paiement."
-
-            print(f"DEBUG change_plan ERROR: {str(e)}")
-            print(traceback.format_exc())
-            return Response({'error': error_msg, 'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        viewset = SubscriptionViewSet()
+        viewset.request = request
+        return viewset.change_plan(request)
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def change_password(self, request):
@@ -442,13 +420,13 @@ class VehicleViewSet(viewsets.ModelViewSet):
             if obj:
                 self.check_object_permissions(self.request, obj)
                 return obj
-        
+
         # Sinon par plaque
         obj = queryset.filter(license_plate__iexact=lookup_value).first()
         if obj:
             self.check_object_permissions(self.request, obj)
             return obj
-            
+
         from django.http import Http404
         raise Http404
 
@@ -532,8 +510,16 @@ class VehicleViewSet(viewsets.ModelViewSet):
         except Vehicle.DoesNotExist:
             return Response({'detail': 'Véhicule non trouvé'}, status=status.HTTP_404_NOT_FOUND)
 
+from rest_framework.pagination import PageNumberPagination
+
+class ScanSessionPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
 class ScanSessionViewSet(viewsets.ModelViewSet):
     serializer_class = ScanSessionSerializer
+    pagination_class = ScanSessionPagination
 
     def get_queryset(self):
         if self.request.user.is_authenticated:
@@ -544,13 +530,41 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
             if self.request.user.user_type in ['FLEET_OWNER', 'INDIVIDUAL']:
                 return ScanSession.objects.filter(
                     vehicle__owner=self.request.user
-                ).select_related('mechanic__user', 'vehicle').prefetch_related('found_dtcs', 'scan_dtcs__dtc').distinct().order_by('-date')
+                ).select_related('mechanic__user', 'vehicle', 'vehicle__owner', 'safety_check').prefetch_related('found_dtcs', 'scan_dtcs__dtc').distinct().order_by('-date')
 
             # Un mécanicien ne voit QUE ses propres scans (dans son garage)
             if self.request.user.user_type == 'MECHANIC':
-                return ScanSession.objects.filter(
-                    mechanic__user=self.request.user
-                ).select_related('mechanic__user', 'vehicle').prefetch_related('found_dtcs', 'scan_dtcs__dtc').distinct().order_by('-date')
+                # On utilise Q pour voir les scans liés à son profil mécanicien
+                # OU les scans qu'il a créés s'il est le propriétaire du véhicule (mode perso)
+                # OU les scans liés à son garage (via shop_name de l'utilisateur ou du profil mécanicien)
+                # On essaie d'être le plus large possible pour l'historique complet
+                shop_name = self.request.user.shop_name
+                
+                # Critères de base : Scans créés par moi (via mechanic__user) ou sur mes véhicules
+                q_filter = models.Q(mechanic__user=self.request.user) | models.Q(vehicle__owner=self.request.user)
+                
+                # AJOUT : Scans où je suis le mécanicien direct
+                try:
+                    mechanic_profile = self.request.user.mechanic_profile
+                    q_filter |= models.Q(mechanic=mechanic_profile)
+                    if not shop_name:
+                        shop_name = mechanic_profile.shop_name
+                except:
+                    pass
+                
+                if shop_name:
+                    # Critères de garage : Scans liés à mon garage par nom
+                    q_filter |= models.Q(mechanic__shop_name__iexact=shop_name)
+                    q_filter |= models.Q(vehicle__owner__shop_name__iexact=shop_name)
+                    # Critère d'administration : Tout scan dont le shop_name est identique
+                    q_filter |= models.Q(mechanic__user__shop_name__iexact=shop_name)
+                
+                # Debug : Voir ce qui se passe
+                qs = ScanSession.objects.filter(q_filter).select_related('mechanic__user', 'vehicle', 'vehicle__owner', 'safety_check').prefetch_related('found_dtcs', 'scan_dtcs__dtc').distinct().order_by('-date')
+                # print(f"[DEBUG_HISTORY] User: {self.request.user.username}, Shop: {shop_name}")
+                # print(f"[DEBUG_HISTORY] Scans filtrés: {qs.count()}")
+                
+                return qs
 
             return ScanSession.objects.none()
         return ScanSession.objects.none()
@@ -689,6 +703,7 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                     code = item if isinstance(item, str) else item.get('code')
                     status_val = 'confirmed' if isinstance(item, str) else item.get('status', 'confirmed')
 
+                    from api.models import DTCReference
                     ref = DTCReference.objects.filter(code=code, brand=brand).first()
                     if not ref:
                         ref = DTCReference.objects.filter(code=code, brand__isnull=True).first()
@@ -705,9 +720,9 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                 pass
 
         # Déduplication intelligente : Si un scan pour ce véhicule par ce mécanicien (ou ce propriétaire) existe déjà
-        # dans les 10 dernières minutes (pour éviter les double-clics ou permettre la reprise d'un scan récent),
-        # on le met à jour au lieu d'en créer un nouveau.
-        time_window = timezone.now() - timezone.timedelta(minutes=10)
+        # dans les 10 secondes (pour éviter les double-clics), on le met à jour.
+        # Mais pour des scans normaux à différents moments, on en crée de nouveaux.
+        time_window = timezone.now() - timezone.timedelta(seconds=10)
 
         scan_filter = {
             'vehicle__license_plate__iexact': vehicle_data.get('license_plate', 'INCONNU'),
@@ -765,6 +780,7 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                         code = item if isinstance(item, str) else item.get('code')
                         status_val = 'confirmed' if isinstance(item, str) else item.get('status', 'confirmed')
 
+                        from api.models import DTCReference
                         ref = DTCReference.objects.filter(code=code, brand=brand).first()
                         if not ref:
                             ref = DTCReference.objects.filter(code=code, brand__isnull=True).first()
@@ -795,7 +811,7 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
         scan.save()
 
         serializer = self.get_serializer(scan)
-        
+
         # Enrichissement avec les pièces recommandées dès la création
         data = serializer.data
         if 'scan_dtcs' in data:
@@ -807,8 +823,8 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                     dtc_id = item['dtc'] if isinstance(item['dtc'], int) else item['dtc'].get('id')
                     dtc_obj = DTCReference.objects.filter(id=dtc_id).first()
                     if dtc_obj:
-                        dtc_serializer = ScanSessionDTCSerializer()
-                        item['recommended_spare_parts'] = dtc_serializer.get_recommended_spare_parts(type('obj', (object,), {'dtc': dtc_obj}))
+                        dtc_sd_serializer = ScanSessionDTCSerializer()
+                        item['recommended_spare_parts'] = dtc_sd_serializer.get_recommended_spare_parts(type('obj', (object,), {'dtc': dtc_obj}))
 
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -852,9 +868,144 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                 except (ValueError, TypeError):
                     pass
 
-        # Déléguer toute l'analyse à la méthode avancée
+        # ── Couche 1-3 : analyse règles + corrélations + courts-circuits
         result = DTCModelAI.analyze_live_deep(pid_values, vehicle_info=vehicle_info)
+
+        # ── Couche 4 : analyse temporelle des tendances (historique envoyé par le frontend)
+        pid_history = request.data.get('pid_history', [])  # liste de snapshots [{pid: val}, ...]
+        trend_alerts = []
+        if pid_history and len(pid_history) >= 10:
+            trend_alerts = DTCModelAI.analyze_temporal_trends(pid_history)
+
+        # ── Couche 5 : écart par rapport à la baseline du véhicule
+        baseline_alerts = []
+        if vehicle_id:
+            baseline_alerts = DTCModelAI.analyze_baseline_deviation(vehicle_id, pid_values)
+
+        # ── Couche 6 : prédiction ML (si modèle actif disponible)
+        ml_alert = None
+        if vehicle_id:
+            ml_alert = DTCModelAI.predict_with_ml(vehicle_id, pid_values)
+
+        # Fusionner toutes les alertes dans la réponse
+        extra_alerts = trend_alerts + baseline_alerts
+        if ml_alert:
+            extra_alerts.append(ml_alert)
+
+        if extra_alerts:
+            result['anomalies'] = extra_alerts + result.get('anomalies', [])
+            result['summary']['tendances_detectees'] = len(trend_alerts)
+            result['summary']['ecarts_baseline'] = len(baseline_alerts)
+            result['summary']['ml_alerte'] = 1 if ml_alert else 0
+            if result['status'] == 'ok' and extra_alerts:
+                result['status'] = 'anomalies_detected'
+                result['verdict'] = '📈 TENDANCE ANORMALE DÉTECTÉE'
+                result['verdict_detail'] = f"{len(extra_alerts)} alerte(s) analytique(s) avancée(s) détectée(s)."
+        else:
+            result['summary']['tendances_detectees'] = 0
+            result['summary']['ecarts_baseline'] = 0
+            result['summary']['ml_alerte'] = 0
+
+        result['summary']['engine_version'] = 'IA Deep Analyze v5.0 (Tendances · Baseline · ML · Court-circuit · Prédictif)'
         return Response(result)
+
+    @action(detail=False, methods=['post'], url_path='record_live_snapshot')
+    def record_live_snapshot(self, request):
+        """
+        Enregistre un snapshot PID en base pour alimenter l'entraînement ML futur
+        et met à jour la baseline du véhicule.
+        Appeler à chaque cycle live (~toutes les 5s pour ne pas surcharger la DB).
+        """
+        from api.services.ai_service import DTCModelAI
+
+        pids = request.data.get('pids', [])
+        vehicle_id = request.data.get('vehicle_id')
+        anomaly_result = request.data.get('anomaly_result', None)
+
+        if not vehicle_id:
+            return Response({'error': 'vehicle_id requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pid_values = {}
+        for item in pids:
+            pid = item.get('pid', '').upper()
+            value = item.get('value')
+            if pid and value is not None:
+                try:
+                    pid_values[pid] = float(value)
+                except (ValueError, TypeError):
+                    pass
+
+        # Mise à jour baseline (apprentissage continu)
+        DTCModelAI.update_vehicle_baseline(vehicle_id, pid_values)
+
+        # Enregistrement historique pour ML
+        DTCModelAI.record_pid_snapshot(vehicle_id, pid_values, anomaly_result=anomaly_result)
+
+        # Retourner l'état de la baseline
+        try:
+            baseline = VehicleBaseline.objects.get(vehicle_id=vehicle_id)
+            baseline_info = {
+                'sample_count': baseline.sample_count,
+                'is_mature': baseline.is_mature,
+                'last_updated': baseline.last_updated,
+            }
+        except VehicleBaseline.DoesNotExist:
+            baseline_info = {'sample_count': 0, 'is_mature': False}
+
+        return Response({
+            'status': 'recorded',
+            'baseline': baseline_info,
+        })
+
+    @action(detail=False, methods=['post'], url_path='train_ml_model')
+    def train_ml_model(self, request):
+        """
+        Déclenche l'entraînement du modèle ML Random Forest.
+        Réservé aux administrateurs. En production, appeler via tâche Celery planifiée.
+        """
+        from api.services.ai_service import DTCModelAI
+
+        if not request.user.is_staff:
+            return Response({'error': 'Accès réservé aux administrateurs'}, status=status.HTTP_403_FORBIDDEN)
+
+        vehicle_id = request.data.get('vehicle_id', None)
+        min_samples = int(request.data.get('min_samples', 500))
+
+        result = DTCModelAI.train_vehicle_ml_model(vehicle_id=vehicle_id, min_samples=min_samples)
+        if result is None:
+            return Response({'error': 'scikit-learn non installé sur le serveur'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(result)
+
+    @action(detail=False, methods=['get'], url_path='baseline_status')
+    def baseline_status(self, request):
+        """
+        Retourne l'état de la baseline apprise pour un véhicule.
+        """
+        vehicle_id = request.query_params.get('vehicle_id')
+        if not vehicle_id:
+            return Response({'error': 'vehicle_id requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            baseline = VehicleBaseline.objects.get(vehicle_id=vehicle_id)
+            return Response({
+                'vehicle_id': vehicle_id,
+                'sample_count': baseline.sample_count,
+                'is_mature': baseline.is_mature,
+                'last_updated': baseline.last_updated,
+                'avg_rpm': baseline.avg_rpm,
+                'avg_coolant_temp': baseline.avg_coolant_temp,
+                'avg_engine_load': baseline.avg_engine_load,
+                'avg_voltage': baseline.avg_voltage,
+                'progress_to_maturity': min(100, int(baseline.sample_count / 500 * 100)),
+            })
+        except VehicleBaseline.DoesNotExist:
+            return Response({
+                'vehicle_id': vehicle_id,
+                'sample_count': 0,
+                'is_mature': False,
+                'progress_to_maturity': 0,
+                'message': 'Aucune baseline disponible — démarrer une session live pour commencer l\'apprentissage.',
+            })
 
     @action(detail=False, methods=['post'], url_path='analyze_dtcs')
     def analyze_dtcs(self, request):
@@ -929,31 +1080,83 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
             return Subscription.objects.filter(mechanic__user=user, is_active=True)
         return Subscription.objects.filter(user=user, is_active=True)
 
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def change_plan(self, request):
+        """
+        Permet à l'utilisateur de changer son plan d'abonnement.
+        Attend 'plan_id', 'transaction_id', 'duration_months' et 'payment_method'.
+        """
+        try:
+            plan_id = request.data.get('plan_id')
+            transaction_id = request.data.get('transaction_id')
+            duration_months = int(request.data.get('duration_months', 1))
+            payment_method = request.data.get('payment_method', 'WAVE')
+
+            if not plan_id or not transaction_id:
+                return Response({'error': 'plan_id et transaction_id sont requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+            plan = SubscriptionPlan.objects.get(id=plan_id)
+            
+            # Utilisation directe du service qui gère déjà le switch entre User/Mechanic
+            subscription, added_days = SubscriptionService.change_subscription(
+                request.user, plan, transaction_id, duration_months, payment_method
+            )
+
+            message = 'Plan d\'abonnement mis à jour avec succès'
+            if added_days > 0:
+                message += f". Nous avons ajouté {added_days} jours restants de votre période d'essai."
+
+            return Response({
+                'message': message,
+                'subscription': SubscriptionSerializer(subscription).data
+            })
+        except SubscriptionPlan.DoesNotExist:
+            return Response({'error': 'Plan d\'abonnement non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            if "UNIQUE constraint failed" in error_msg or "transaction_id" in error_msg:
+                error_msg = "Cette transaction a déjà été utilisée. Veuillez vérifier votre paiement."
+
+            print(f"DEBUG change_plan ERROR: {str(e)}")
+            print(traceback.format_exc())
+            return Response({'error': error_msg, 'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=False, methods=['post'])
     def subscribe(self, request):
         """
-        Souscrit le mécanicien à un plan.
-        Données attendues : {'plan_id': 1, 'transaction_id': 'REF-123'}
+        Alias pour change_plan
         """
-        mechanic = Mechanic.objects.get(user=request.user)
-        plan_id = request.data.get('plan_id')
-        transaction_id = request.data.get('transaction_id')
+        return self.change_plan(request)
 
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def confirm_test_payment(self, request):
+        """
+        Endpoint pour confirmer un paiement en mode test.
+        Utile quand le webhook Wave ne peut pas être appelé localement.
+        """
+        gs, _ = GlobalSettings.objects.get_or_create(id=1)
+        if not gs.is_test_mode:
+            return Response({'error': 'Le mode test n\'est pas activé'}, status=status.HTTP_403_FORBIDDEN)
+            
+        payment_id = request.data.get('payment_id')
+        transaction_id = request.data.get('transaction_id', f"CONFIRMED-TEST-{payment_id}")
+        
         try:
-            plan = SubscriptionPlan.objects.get(id=plan_id)
-            subscription, added_days = SubscriptionService.activate_subscription(mechanic.user, plan, transaction_id)
-
-            data = SubscriptionSerializer(subscription).data
-            if added_days > 0:
-                data['message'] = f"Votre abonnement a été activé. Nous avons ajouté {added_days} jours restants de votre période d'essai à votre nouvel abonnement."
-            else:
-                data['message'] = "Votre abonnement a été activé avec succès."
-
-            return Response(data, status=status.HTTP_201_CREATED)
-        except SubscriptionPlan.DoesNotExist:
-            return Response({'error': 'Plan non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+            payment = Payment.objects.get(id=payment_id)
+            # Sécurité: s'assurer que le paiement appartient à l'utilisateur
+            if payment.subscription.user != request.user and payment.subscription.mechanic.user != request.user:
+                return Response({'error': 'Paiement non autorisé'}, status=status.HTTP_403_FORBIDDEN)
+                
+            subscription = SubscriptionService.confirm_payment(payment, transaction_id)
+            return Response({
+                'message': 'Paiement confirmé avec succès (Mode Test)',
+                'subscription': SubscriptionSerializer(subscription).data
+            })
+        except Payment.DoesNotExist:
+            return Response({'error': 'Paiement non trouvé'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class WavePaymentInitView(generics.CreateAPIView):
     """
@@ -1075,10 +1278,30 @@ class DTCReferenceViewSet(viewsets.ReadOnlyModelViewSet):
 class UpcomingModuleViewSet(viewsets.ReadOnlyModelViewSet):
     """
     API pour consulter les modules à venir.
+    Filtre les modules selon le plan de l'utilisateur.
     """
-    queryset = UpcomingModule.objects.filter(is_active=True)
     serializer_class = UpcomingModuleSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = UpcomingModule.objects.filter(is_active=True)
+
+        # On récupère le plan actif de l'utilisateur
+        active_sub = user.active_subscription
+        if active_sub and active_sub.plan:
+            # On affiche les modules qui :
+            # 1. N'ont pas de plans spécifiques (publics)
+            # 2. OU concernent le plan actuel de l'utilisateur
+            queryset = queryset.filter(
+                models.Q(applicable_plans__isnull=True) |
+                models.Q(applicable_plans=active_sub.plan)
+            ).distinct()
+        else:
+            # Si pas d'abonnement, on ne montre que les modules publics
+            queryset = queryset.filter(applicable_plans__isnull=True)
+
+        return queryset
 
 class WelcomeContentViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -1355,6 +1578,21 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             return Appointment.objects.filter(mechanic=user.mechanic_profile)
         return Appointment.objects.filter(client=user)
 
+    def create(self, request, *args, **kwargs):
+        # Vérification d'unicité : un seul RDV actif par jour pour le même particulier
+        appointment_date = request.data.get('appointment_date')
+        if appointment_date:
+            existing = Appointment.objects.filter(
+                client=request.user,
+                appointment_date=appointment_date,
+            ).exclude(status='CANCELLED').first()
+            if existing:
+                return Response(
+                    {'error': "Impossible de prendre le rdv, car vous avez deja un rdv pour ce jour"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         # Le client est l'utilisateur connecté
         appointment = serializer.save(client=self.request.user)
@@ -1365,9 +1603,9 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         vehicle_info = "son véhicule"
         if appointment.vehicle:
             vehicle_info = f"le véhicule {appointment.vehicle.brand} {appointment.vehicle.model}"
-        
+
         welcome_msg = f"Bonjour, je viens de prendre rendez-vous pour {vehicle_info} le {appointment.appointment_date.strftime('%d/%m/%Y à %H:%M') if appointment.appointment_date else 'prochainement'}. Merci de confirmer la disponibilité."
-        
+
         ChatMessage.objects.create(
             sender=self.request.user,
             receiver=appointment.mechanic.user,
@@ -1394,8 +1632,8 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 appointment=appointment,
                 title="Nouveau Rendez-vous !",
                 message=f"Le client {client_name} (Tél: {client_phone}) a pris rendez-vous pour le véhicule {vehicle_details} le {appointment.appointment_date.strftime('%d/%m/%Y à %H:%M') if appointment.appointment_date else 'Inconnue'}.",
-                notification_type='APPOINTMENT',
-                link=f"AppointmentDetails?id={appointment.id}"
+                notification_type='CHAT',
+                link=f"ChatDetail?appointment_id={appointment.id}"
             )
             print(f"[Push] Notification enregistrée pour le mécanicien: {mechanic_user.username}")
         except Exception as e:
@@ -1418,7 +1656,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 from api.models import ChatMessage, AppNotification
                 status_label = dict(Appointment.STATUS_CHOICES).get(new_status)
                 msg_text = f"Le statut de votre rendez-vous du {appointment.appointment_date.strftime('%d/%m/%Y') if appointment.appointment_date else ''} a été mis à jour : **{status_label}**."
-                
+
                 # Message dans le chat (de la part du mécanicien vers le client)
                 ChatMessage.objects.create(
                     sender=appointment.mechanic.user,
@@ -1477,7 +1715,7 @@ class ClientsSearchView(generics.ListAPIView):
         query = self.request.query_params.get('q', '')
         if len(query) < 2:
             return User.objects.none()
-        
+
         return User.objects.filter(
             models.Q(first_name__icontains=query) |
             models.Q(last_name__icontains=query) |
@@ -1494,7 +1732,7 @@ class ClientsSearchView(generics.ListAPIView):
                 vehicles = list(user.personal_vehicles.values_list('license_plate', flat=True))
             except Exception:
                 vehicles = []
-            
+
             data.append({
                 'id': user.id,
                 'name': f"{user.first_name} {user.last_name}",
@@ -1555,7 +1793,8 @@ class AppNotificationViewSet(viewsets.ModelViewSet):
                     appointment=appointment,
                     title="Rendez-vous confirmé !",
                     message=f"Le garage {request.user.shop_name} a confirmé votre RDV pour le {appointment.appointment_date}.",
-                    notification_type='APPOINTMENT'
+                    notification_type='CHAT',
+                    link=f"ChatDetail?appointment_id={appointment.id}"
                 )
                 return Response({'status': 'appointment confirmed'})
             elif action_type == 'CANCEL':
@@ -1567,7 +1806,8 @@ class AppNotificationViewSet(viewsets.ModelViewSet):
                     appointment=appointment,
                     title="Rendez-vous annulé",
                     message=f"Le garage {request.user.shop_name} ne peut pas vous recevoir. Motif: {response_text}",
-                    notification_type='APPOINTMENT'
+                    notification_type='CHAT',
+                    link=f"ChatDetail?appointment_id={appointment.id}"
                 )
                 return Response({'status': 'appointment cancelled'})
             elif action_type == 'REPLY':
@@ -1577,7 +1817,8 @@ class AppNotificationViewSet(viewsets.ModelViewSet):
                     appointment=appointment,
                     title=f"Message de {request.user.shop_name}",
                     message=response_text,
-                    notification_type='INFO'
+                    notification_type='CHAT',
+                    link=f"ChatDetail?appointment_id={appointment.id}"
                 )
                 return Response({'status': 'message sent'})
 
@@ -1602,12 +1843,12 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
         # On veut une entrée par interlocuteur unique
         # On récupère tous les messages impliquant l'utilisateur
         all_msgs = ChatMessage.objects.filter(Q(sender=user) | Q(receiver=user))
-        
+
         # Trouver les IDs des interlocuteurs
         interlocutor_ids = set()
         for m in all_msgs:
             interlocutor_ids.add(m.sender_id if m.sender_id != user.id else m.receiver_id)
-            
+
         results = []
         for ou_id in interlocutor_ids:
             try:
@@ -1616,11 +1857,11 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
                 msgs = all_msgs.filter(Q(sender_id=ou_id) | Q(receiver_id=ou_id)).order_by('-created_at')
                 last_msg = msgs.first()
                 unread_count = msgs.filter(receiver=user, is_read=False).count()
-                
+
                 # On essaie de trouver le RDV le plus pertinent (le dernier)
                 last_apt_msg = msgs.exclude(appointment=None).first()
                 appointment_id = last_apt_msg.appointment_id if last_apt_msg else None
-                
+
                 title = ""
                 if other_user.user_type == 'MECHANIC':
                     title = getattr(other_user, 'shop_name', None) or other_user.get_full_name() or other_user.username
@@ -1657,7 +1898,7 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
         other_user_id = request.data.get('other_user_id')
 
         queryset = ChatMessage.objects.filter(receiver=user, is_read=False)
-        
+
         if other_user_id:
             # On marque tout comme lu pour cet interlocuteur, peu importe le RDV
             queryset = queryset.filter(sender_id=other_user_id)
@@ -1665,7 +1906,7 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(appointment_id=appointment_id)
 
         count = queryset.update(is_read=True)
-        
+
         # Invalider ou mettre à jour les notifications liées
         from api.models import AppNotification
         notif_qs = AppNotification.objects.filter(user=user, is_read=False, notification_type='CHAT')
@@ -1883,7 +2124,7 @@ class PersonalDashboardView(generics.RetrieveAPIView):
             if telemetry and telemetry.latitude and telemetry.longitude:
                 lat_user = telemetry.latitude
                 lng_user = telemetry.longitude
-        
+
         # S'assurer que lat/lng sont des flottants s'ils existent
         try:
             if lat_user: lat_user = float(lat_user)
@@ -1898,22 +2139,22 @@ class PersonalDashboardView(generics.RetrieveAPIView):
             dist = None
             if lat_user and lng_user:
                 dist = haversine(lng_user, lat_user, mech_profile.longitude, mech_profile.latitude)
-            
+
             # Formatage de la distance
             distance_str = f"{round(dist, 2)} km" if dist is not None else "Distance inconnue"
 
             # Trouver si l'utilisateur a une prestation notifiable pour ce garage
             # Un scan ou un RDV terminé qui n'a pas encore de review associée
             last_notifiable_scan = ScanSession.objects.filter(
-                vehicle=vehicle, 
-                mechanic=mech_profile, 
+                vehicle=vehicle,
+                mechanic=mech_profile,
                 review__isnull=True
             ).order_by('-date').first()
-            
+
             last_notifiable_appt = Appointment.objects.filter(
-                vehicle=vehicle, 
-                mechanic=mech_profile, 
-                status='COMPLETED', 
+                vehicle=vehicle,
+                mechanic=mech_profile,
+                status='COMPLETED',
                 review__isnull=True
             ).order_by('-appointment_date').first()
 

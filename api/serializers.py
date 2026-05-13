@@ -8,6 +8,19 @@ from api.models import (
     Review, SparePartStore, SparePart
 )
 
+from api.models import (
+    User, Mechanic, Vehicle, DTCReference, ScanSession, ScanSessionDTC, SubscriptionPlan,
+    Subscription, Payment, VehicleModel, GlobalSettings, UpcomingModule,
+    WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert,
+    MaintenanceReminder, RegionalEvent, Appointment, AppNotification, ChatMessage,
+    SparePartStore, SparePartCategory, SparePart, Review, TowTruck, Feature
+)
+
+class TowTruckSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TowTruck
+        fields = '__all__'
+
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender_name = serializers.ReadOnlyField(source='sender.get_full_name')
     is_me = serializers.SerializerMethodField()
@@ -56,13 +69,15 @@ class UserSerializer(serializers.ModelSerializer):
     is_trial = serializers.SerializerMethodField()
     trial_days_remaining = serializers.SerializerMethodField()
     has_vehicle = serializers.SerializerMethodField()
+    features = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 'phone',
             'is_mechanic', 'user_type', 'shop_name', 'location',
-            'active_subscription', 'subscription_tier', 'is_trial', 'trial_days_remaining', 'has_vehicle'
+            'active_subscription', 'subscription_tier', 'is_trial', 'trial_days_remaining', 'has_vehicle',
+            'features'
         ]
 
     def get_active_subscription(self, obj):
@@ -72,8 +87,7 @@ class UserSerializer(serializers.ModelSerializer):
         return None
 
     def get_is_trial(self, obj):
-        sub = obj.active_subscription
-        return sub.plan.tier == 'TRIAL' if sub and sub.plan else False
+        return obj.subscription_tier == 'TRIAL'
 
     def get_trial_days_remaining(self, obj):
         sub = obj.active_subscription
@@ -100,6 +114,15 @@ class UserSerializer(serializers.ModelSerializer):
         if obj.user_type == 'FLEET_OWNER':
             return obj.fleet_vehicles.exists()
         return False
+
+    def get_features(self, obj):
+        if obj.is_trial:
+            return list(Feature.objects.filter(is_active=True).values_list('code', flat=True))
+        
+        active_sub = obj.active_subscription
+        if active_sub and active_sub.plan:
+            return list(active_sub.plan.features.filter(is_active=True).values_list('code', flat=True))
+        return []
 
 class VehicleModelSerializer(serializers.ModelSerializer):
     class Meta:
@@ -175,6 +198,7 @@ class MechanicSerializer(serializers.ModelSerializer):
     average_rating = serializers.ReadOnlyField()
     review_count = serializers.ReadOnlyField()
     badges = serializers.ReadOnlyField()
+    features = serializers.SerializerMethodField()
 
     class Meta:
         model = Mechanic
@@ -183,15 +207,23 @@ class MechanicSerializer(serializers.ModelSerializer):
             'shop_name', 'location', 'latitude', 'longitude', 'specialties', 'is_expert',
             'is_active', 'created_at',
             'subscription_tier', 'is_trial', 'trial_days_remaining', 'active_subscription',
-            'average_rating', 'review_count', 'badges'
+            'average_rating', 'review_count', 'badges', 'features'
         ]
 
+    def get_features(self, obj):
+        if obj.is_trial:
+            return list(Feature.objects.filter(is_active=True).values_list('code', flat=True))
+
+        active_sub = obj.active_subscription
+        if active_sub and active_sub.plan:
+            return list(active_sub.plan.features.filter(is_active=True).values_list('code', flat=True))
+        return []
+
     def get_is_trial(self, obj):
-        sub = obj.user.active_subscription
-        return sub.plan.tier == 'TRIAL' if sub and sub.plan else False
+        return obj.is_trial
 
     def get_trial_days_remaining(self, obj):
-        sub = obj.user.active_subscription
+        sub = obj.active_subscription
         if sub and sub.plan and sub.plan.tier == 'TRIAL':
             from django.utils import timezone
             import math
@@ -206,7 +238,7 @@ class MechanicSerializer(serializers.ModelSerializer):
         return 0
 
     def get_active_subscription(self, obj):
-        sub = obj.user.active_subscription
+        sub = obj.active_subscription
         if sub:
             return SubscriptionSerializer(sub, context=self.context).data
         return None
@@ -405,6 +437,15 @@ class ScanSessionSerializer(serializers.ModelSerializer):
         return None
 
     def get_ai_predictions(self, obj):
+        # Optimisation : On ne calcule les prédictions IA que si on demande un seul scan (detail view)
+        # ou si explicitement demandé, car c'est très lourd pour les listes.
+        request = self.context.get('request')
+        if request and request.parser_context and request.parser_context.get('view'):
+            view = request.parser_context['view']
+            # Si on est dans l'action 'list', on évite le calcul lourd
+            if getattr(view, 'action', None) == 'list':
+                return None
+
         from api.services.ai_service import DTCModelAI
         # Utiliser les codes de scan_dtcs qui contiennent aussi le statut
         dtc_codes = [sd.dtc.code for sd in obj.scan_dtcs.all()]
@@ -419,10 +460,17 @@ class ScanSessionSerializer(serializers.ModelSerializer):
         }
         return DTCModelAI.predict_advanced(dtc_codes, vehicle_info)
 
+class FeatureSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Feature
+        fields = ['id', 'name', 'code', 'description', 'price']
+
 class SubscriptionPlanSerializer(serializers.ModelSerializer):
+    features_details = FeatureSerializer(source='features', many=True, read_only=True)
+    
     class Meta:
         model = SubscriptionPlan
-        fields = '__all__'
+        fields = ['id', 'name', 'target_user_type', 'tier', 'price', 'duration_days', 'description', 'features', 'features_details']
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     plan = SubscriptionPlanSerializer(read_only=True)
@@ -472,6 +520,9 @@ class UpcomingModuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = UpcomingModule
         fields = ['id', 'name', 'description_html', 'expected_release_date', 'expectedReleaseDate', 'applicable_plans', 'applicablePlans', 'is_active', 'created_at']
+
+    def get_description_html(self, obj):
+        return get_description_html(obj)
 
 
 class WelcomeContentSerializer(serializers.ModelSerializer):

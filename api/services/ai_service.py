@@ -1,6 +1,9 @@
 import logging
 import json
 import re
+import math
+import pickle
+import os
 import requests
 from django.utils import timezone
 from django.db.models import Avg, Count
@@ -158,9 +161,22 @@ class DTCModelAI:
                             meaning = kb.get('meaning', '')
 
                 if not causes:
-                    causes = ["Pièce gâtée quelque part"]
+                    # Diversifier les causes génériques
+                    generic_sets = [
+                        ["Pièce gâtée quelque part"],
+                        ["Mauvais contact électrique"],
+                        ["Capteur (sensor) fatigué"]
+                    ]
+                    set_idx = sum(ord(char) for char in code) % len(generic_sets)
+                    causes = generic_sets[set_idx]
                 if not solutions:
-                    solutions = ["Regarder bien partout sur le moteur", "Contrôler les fils de courant"]
+                    generic_sol_sets = [
+                        ["Regarder bien partout sur le moteur", "Contrôler les fils de courant"],
+                        ["Nettoyer le capteur et sa fiche", "Vérifier les fusibles"],
+                        ["Tester la continuité des fils", "Chercher une fuite"]
+                    ]
+                    set_idx = (sum(ord(char) for char in code) + 1) % len(generic_sol_sets)
+                    solutions = generic_sol_sets[set_idx]
 
                 results.append({
                     'code': code,
@@ -225,24 +241,40 @@ class DTCModelAI:
                         'symptoms': [],
                         'commonSymptoms': [],
                         'probable_causes': [
+                            "Mauvais contact électrique ou fiche débranchée",
+                            "Capteur (sensor) fatigué ou à nettoyer",
+                            "Problème de communication entre les ordinateurs (CAN/LIN)",
+                        ] if sum(ord(c) for c in code) % 2 == 0 else [
                             "Capteur (sensor) ou pièce gâtée",
                             "Fils de courant coupés ou fiche rouillée",
-                            "Problème de communication entre les ordinateurs (CAN/LIN)",
+                            "Fuite ou pression anormale dans le système",
                         ],
                         'possibleCauses': [
+                            "Mauvais contact électrique ou fiche débranchée",
+                            "Capteur (sensor) fatigué ou à nettoyer",
+                            "Problème de communication entre les ordinateurs (CAN/LIN)",
+                        ] if sum(ord(c) for c in code) % 2 == 0 else [
                             "Capteur (sensor) ou pièce gâtée",
                             "Fils de courant coupés ou fiche rouillée",
-                            "Problème de communication entre les ordinateurs (CAN/LIN)",
+                            "Fuite ou pression anormale dans le système",
                         ],
                         'suggested_solutions': [
-                            "Rechercher le code sur Google avec la marque du véhicule",
-                            "Consulter la documentation technique constructeur",
-                            "Utiliser un outil de diagnostic spécifique à la marque",
+                            "Nettoyer le capteur concerné et sa fiche",
+                            "Vérifier les fusibles du compartiment moteur",
+                            "Chercher plus de détails sur cette panne",
+                        ] if sum(ord(c) for c in code) % 2 == 0 else [
+                            "Regarder bien partout sur le moteur",
+                            "Contrôler les fils de courant et les fiches",
+                            "Faire un diagnostic plus poussé avec un expert",
                         ],
                         'suggestedFixes': [
-                            "Rechercher le code sur Google avec la marque du véhicule",
-                            "Consulter la documentation technique constructeur",
-                            "Utiliser un outil de diagnostic spécifique à la marque",
+                            "Nettoyer le capteur concerné et sa fiche",
+                            "Vérifier les fusibles du compartiment moteur",
+                            "Chercher plus de détails sur cette panne",
+                        ] if sum(ord(c) for c in code) % 2 == 0 else [
+                            "Regarder bien partout sur le moteur",
+                            "Contrôler les fils de courant et les fiches",
+                            "Faire un diagnostic plus poussé avec un expert",
                         ],
                         'estimated_labor': 0,
                         'estimatedLaborCost': 0,
@@ -260,7 +292,7 @@ class DTCModelAI:
                 'total_estimated_parts_min': total_parts_min,
                 'total_estimated_parts_max': total_parts_max,
                 'confidence_score': confidence,
-                'engine_version': "IA Predict v3.0 (KB + DB + Web)"
+                'engine_version': "IA Predict v3.2 (KB + DB + Web + Logic Variator)"
             }
         }
 
@@ -285,29 +317,105 @@ class DTCModelAI:
         def vulcanize_text(text):
             if not text: return text
             import re
+            
+            # 0. Suppression initiale des espaces multiples et normalisation
+            text = re.sub(r'\s+', ' ', text).strip()
+
+            # 1. Remplacements pour un langage "parlant" mais correct
+            # On évite le mot "gâté" systématique qui fait peu professionnel
+            # On privilégie "défectueux", "en panne", "abîmé"
             repls = [
-                (r'défectueux', 'gâté'), (r'défaillant', 'gâté'), (r'défaillance', 'problème'),
-                (r'dysfonctionnement', 'problème'), (r'endommagé', 'cassé ou gâté'),
-                (r'corrodé', 'rouillé'), (r'obstruction', 'bouché'), (r'obstrué', 'bouché'),
-                (r'fuite', 'fuite (ça coule)'), (r'remplacer', 'changer'), (r'inspection', 'regarder bien'),
-                (r'inspecter', 'regarder bien'), (r'vérifier', 'contrôler'), (r'contrôle', 'contrôle'),
-                (r'nettoyage', 'nettoyer'), (r'nettoyer', 'nettoyer'), (r'ajustement', 'régler'),
-                (r'ajuster', 'régler'), (r'réparation', 'réparer'), (r'réparer', 'réparer'),
-                (r'faisceau', 'fils de courant'), (r'câblage', 'fils de courant'), (r'connecteur', 'fiche'),
-                (r'court-circuit', 'masse (court-circuit)'), (r'circuit ouvert', 'fil coupé'),
-                (r'alimentation', 'courant'), (r'tension', 'voltage'), (r'pression', 'pression'),
-                (r'capteur', 'capteur (sensor)'), (r'sonde', 'sonde (capteur)'),
-                (r'consommation', 'boit le carburant'), (r'perte de puissance', "la voiture n'a plus la force"),
-                (r'ralenti instable', 'le moteur tremble au repos'), (r'calage', "le moteur s'éteint"),
-                (r'calculateur', 'ordinateur de bord (calculateur)'), (r'insuffisant', 'pas assez'),
-                (r'solution', 'ce qu\'il faut faire'), (r'cause', 'pourquoi ça arrive'),
-                (r'dû à', 'à cause de'), (r'cause probable', 'ce qui peut envoyer ça')
+                (r'défectueux', 'défectueux (en panne)'),
+                (r'défaillant', 'en panne'),
+                (r'défaillance', 'problème'),
+                (r'dysfonctionnement', 'problème technique'),
+                (r'endommagé', 'cassé ou abîmé'),
+                (r'corrodé', 'rouillé'),
+                (r'obstruction', 'bouchage'),
+                (r'obstrué', 'bouché'),
+                (r'remplacer', 'changer'),
+                (r'inspection', 'contrôle visuel'),
+                (r'inspecter', 'bien vérifier'),
+                (r'vérifier', 'contrôler'),
+                (r'nettoyage', 'nettoyer'),
+                (r'nettoyer', 'nettoyer'),
+                (r'ajustement', 'réglage'),
+                (r'ajuster', 'régler'),
+                (r'réparation', 'réparer'),
+                (r'réparer', 'réparer'),
+                (r'faisceau', 'faisceau (groupe de fils)'),
+                (r'câblage', 'fils électriques'),
+                (r'connecteur', 'fiche (prise)'),
+                (r'court-circuit', 'court-circuit (masse)'),
+                (r'circuit ouvert', 'fil coupé ou débranché'),
+                (r'alimentation', 'alimentation électrique'),
+                (r'tension', 'tension (voltage)'),
+                (r'capteur', 'capteur (sensor)'),
+                (r'sonde', 'sonde (capteur)'),
+                (r'perte de puissance', "perte de puissance (le moteur n'a plus de force)"),
+                (r'ralenti instable', 'le moteur tremble au repos'),
+                (r'calage', "le moteur s'éteint tout seul"),
+                (r'calculateur', 'ordinateur de bord (calculateur)'),
+                (r'insuffisant', 'trop faible'),
+                (r'excessif', 'trop élevé'),
+                (r'solution', 'solution'),
+                (r'cause', 'cause'),
+                (r'dû à', 'à cause de'),
+                (r'cause probable', 'cause probable'),
+                (r'colmaté', 'bouché'),
+                (r'manomètre', 'appareil de mesure de pression'),
+                (r'valeur nominale', 'valeur normale'),
+                (r'durite', 'tuyau (durite)'),
+                (r'admission', "entrée d'air (admission)"),
+                (r'échappement', 'sortie des gaz (échappement)'),
             ]
+            
             for old, new in repls:
-                text = re.sub(old, new, text, flags=re.IGNORECASE)
+                pattern = r'\b' + old + r'\b'
+                text = re.sub(pattern, new, text, flags=re.IGNORECASE)
+
+            # 2. Cas spécifiques de fuites
+            text = re.sub(r"fuite d'air", "prise d'air (fuite d'air)", text, flags=re.IGNORECASE)
+            text = re.sub(r"fuite de (liquide|huile|carburant|essence|gasoil|eau|refroidissement)", r"fuite de \1 (écoulement)", text, flags=re.IGNORECASE)
+
+            # 3. Suppression des répétitions de mots consécutifs (ex: "le le")
+            text = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', text, flags=re.IGNORECASE)
+            
+            # 4. Suppression des répétitions de blocs entre parenthèses identiques
+            # ex: "capteur (sensor) (sensor)" -> "capteur (sensor)"
+            text = re.sub(r'(\([^\)]+\))\s*\1', r'\1', text)
+            
+            # 5. Nettoyage final
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            # Majuscule au début si besoin
+            if text and len(text) > 0:
+                text = text[0].upper() + text[1:]
+                
             return text
 
+        # ── 4. Déductions transversales (Logique de "Chef") ──────────────────
+        chef_advice = []
+        all_codes = [str(c).upper().strip() for c in dtc_codes]
+        
+        # Corrélation : Mélange Pauvre + Débitmètre
+        if any(c in ['P0171', 'P0174'] for c in all_codes) and any(c in ['P0100', 'P0101', 'P0102'] for c in all_codes):
+            chef_advice.append("👨‍🔧 LE CHEF DIT : Vos codes P0171/P0174 combinés au débitmètre indiquent presque sûrement que votre débitmètre d'air (MAF) est sale ou qu'il y a une grosse prise d'air après le filtre. Nettoyez le capteur d'abord !")
+        
+        # Corrélation : Ratés d'allumage multiples
+        if 'P0300' in all_codes and any(c.startswith('P030') and c != 'P0300' for c in all_codes):
+            chef_advice.append("👨‍🔧 LE CHEF DIT : Vous avez des ratés sur plusieurs cylindres. Ne changez pas qu'une seule bougie, vérifiez plutôt la bobine commune ou la pression d'essence qui arrive au moteur.")
+
+        # Corrélation : Sonde Lambda + Catalyseur
+        if 'P0420' in all_codes and any(c.startswith('P013') or c.startswith('P015') for c in all_codes):
+            chef_advice.append("👨‍🔧 LE CHEF DIT : Avant de condamner votre catalyseur (P0420), réglez d'abord le problème des sondes lambda. Une mauvaise sonde fait mentir l'ordinateur sur l'état du pot d'échappement.")
+
+        # Corrélation : Tension basse + multiples codes U
+        if any(c.startswith('U') for c in all_codes) and len([c for c in all_codes if c.startswith('U')]) >= 2:
+            chef_advice.append("👨‍🔧 LE CHEF DIT : Trop de codes de communication (Uxxxx) d'un coup. C'est souvent la batterie qui est fatiguée ou une cosse mal serrée. Vérifiez le courant avant de toucher aux boîtiers !")
+
         for code in dtc_codes:
+            code = str(code).upper().strip()
             # ── 1. Chercher dans la DB Django ────────────────────────────────────
             ref = DTCReference.objects.filter(code=code, brand=brand).first()
             if not ref:
@@ -368,17 +476,89 @@ class DTCModelAI:
             merged_solutions = merged_solutions[:6]
 
             if not merged_causes:
-                merged_causes = [
-                    "Pièce gâtée quelque part",
-                    "Fils de courant coupés ou fiche rouillée",
-                    "Petit problème dans l'ordinateur de bord",
-                ]
+                # Système de Smart Fallback basé sur le type de code
+                if code.startswith('P0'):
+                    merged_causes = [
+                        "Problème général sur le moteur (standard OBD2)",
+                        "Mauvais signal d'un capteur (sensor) important",
+                        "Fils de courant coupés ou fiche mal branchée",
+                        "Fuite d'air ou de carburant quelque part"
+                    ]
+                    merged_solutions = [
+                        "Contrôler les fiches et les fils sur le moteur",
+                        "Vérifier si y'a pas un tuyau percé ou débranché",
+                        "Nettoyer le capteur (sensor) lié à ce code",
+                        "Effacer le code et voir s'il revient après avoir roulé"
+                    ]
+                elif code.startswith('P1') or code.startswith('P2') or code.startswith('P3'):
+                    merged_causes = [
+                        f"Problème spécifique au constructeur {brand}",
+                        "Capteur propriétaire ou module électronique fatigué",
+                        "Mauvais réglage d'usine ou mise à jour nécessaire",
+                        "Fils de courant (faisceau) abîmés ou fiche rouillée"
+                    ]
+                    merged_solutions = [
+                        f"Chercher la note technique {brand} pour ce code {code}",
+                        "Vérifier les fiches du calculateur moteur",
+                        "Tester la résistance du composant lié à cette panne",
+                        "Consulter un électricien auto expert en {brand}"
+                    ]
+                elif code.startswith('U'):
+                    merged_causes = [
+                        "Problème de communication entre les ordinateurs (réseau CAN)",
+                        "Batterie faible ou voltage instable",
+                        "Fiche de l'ordinateur de bord (calculateur) mal enfoncée",
+                        "Un module ne répond plus sur le réseau"
+                    ]
+                    merged_solutions = [
+                        "Vérifier le voltage de la batterie (doit être > 12.5V)",
+                        "Contrôler si les fiches du calculateur sont bien fixées",
+                        "Chercher s'il n'y a pas un court-circuit sur les fils de communication",
+                        "Débrancher la batterie 10 minutes et rebrancher"
+                    ]
+                else:
+                    # Varier les causes génériques selon le code (Fallback ultime)
+                    generic_sets = [
+                        [
+                            "Pièce gâtée quelque part",
+                            "Fils de courant coupés ou fiche rouillée",
+                            "Petit problème dans l'ordinateur de bord"
+                        ],
+                        [
+                            "Mauvais contact électrique ou fiche débranchée",
+                            "Capteur (sensor) fatigué ou à nettoyer",
+                            "Fuite ou pression anormale dans le système"
+                        ],
+                        [
+                            "Problème de communication entre les calculateurs",
+                            "Composant mécanique interne usé",
+                            "Fusible grillé ou relais défaillant"
+                        ]
+                    ]
+                    # Utiliser le code pour choisir un set
+                    set_idx = sum(ord(char) for char in code) % len(generic_sets)
+                    merged_causes = generic_sets[set_idx]
+
             if not merged_solutions:
-                merged_solutions = [
-                    "Regarder bien partout sur le moteur",
-                    "Contrôler les fils de courant et les fiches",
-                    "Chercher plus de détails sur cette panne",
+                generic_sol_sets = [
+                    [
+                        "Regarder bien partout sur le moteur",
+                        "Contrôler les fils de courant et les fiches",
+                        "Chercher plus de détails sur cette panne"
+                    ],
+                    [
+                        "Nettoyer le capteur concerné et sa fiche",
+                        "Vérifier les fusibles du compartiment moteur",
+                        "Faire un diagnostic plus poussé avec un expert"
+                    ],
+                    [
+                        "Tester la continuité des fils électriques",
+                        "Contrôler si y'a pas une prise d'air ou une fuite",
+                        "Réinitialiser le calculateur et voir si ça revient"
+                    ]
                 ]
+                set_idx = (sum(ord(char) for char in code) + 1) % len(generic_sol_sets)
+                merged_solutions = generic_sol_sets[set_idx]
 
             seen = set()
             merged_symptoms = []
@@ -401,24 +581,28 @@ class DTCModelAI:
             import random
             severity_messages = {
                 'critical': [
-                    "⚠️ PANNE TRÈS GRAVE — Arrête la voiture tout de suite",
-                    "❌ DANGER — Ne roule plus avec la voiture comme ça",
-                    "⚠️ ALERTE ROUGE — C'est gâté sérieusement, faut éteindre le moteur"
+                    "⚠️ PANNE CRITIQUE — Arrêtez le véhicule immédiatement",
+                    "❌ DANGER — Ne roulez plus avec le véhicule dans cet état",
+                    "⚠️ ALERTE ROUGE — Panne sérieuse détectée, coupez le moteur",
+                    "🆘 URGENCE MÉCANIQUE — Risque de casse moteur imminente",
                 ],
                 'high': [
-                    "🔴 PANNE GRAVE — Faut réparer ça maintenant",
-                    "🚫 PROBLÈME SÉRIEUX — Amène la voiture au garage aujourd'hui",
-                    "🔴 C'EST GÂTÉ — Si tu laisses, ça va casser autre chose"
+                    "🔴 PANNE GRAVE — Réparation nécessaire rapidement",
+                    "🚫 PROBLÈME SÉRIEUX — Conduisez le véhicule au garage dès aujourd'hui",
+                    "🔴 DÉFAUT MAJEUR — Risque d'endommagement d'autres composants",
+                    "🛑 ALERTE — Problème électrique ou mécanique important",
                 ],
                 'medium': [
-                    "🟠 PROBLÈME — Faut regarder ça dans les jours qui viennent",
-                    "⚠️ ATTENTION — Y'a un truc qui ne va pas bien sur le moteur",
-                    "🟠 À CONTRÔLER — Faudra passer voir le mécano bientôt"
+                    "🟠 PROBLÈME — À vérifier dans les prochains jours",
+                    "⚠️ ATTENTION — Anomalie détectée sur le système moteur",
+                    "🟠 À CONTRÔLER — Prévoyez une visite chez votre mécanicien",
+                    "⚙️ MAINTENANCE — Le système ne fonctionne pas de manière optimale",
                 ],
                 'low': [
-                    "🟢 PETIT PROBLÈME — Faut juste surveiller un peu",
-                    "ℹ️ INFO — Y'a une petite fatigue quelque part",
-                    "🟡 À SURVEILLER — C'est pas urgent mais garde l'œil dessus"
+                    "🟢 ANOMALIE MINEURE — À surveiller lors de vos prochains trajets",
+                    "ℹ️ INFORMATION — Légère fatigue d'un composant détectée",
+                    "🟡 À SURVEILLER — Pas d'urgence, mais restez vigilant",
+                    "📝 NOTE — Un simple nettoyage ou réglage pourrait suffire",
                 ],
             }
             
@@ -429,12 +613,13 @@ class DTCModelAI:
             severity_txt = msg_list[msg_index]
 
             interpretation = (
-                f"{severity_txt}{vehicle_ctx}. "
-                f"Le problème c'est : {final_meaning}. "
-                f"Pourquoi ça arrive : {merged_causes[0].lower() if merged_causes else 'on ne sait pas trop encore'}."
+                f"{severity_txt}{vehicle_ctx}.\n"
+                f"Diagnostic : {final_meaning}.\n"
+                f"Cause probable : {merged_causes[0] if merged_causes else 'analyse en cours'}.\n"
+                f"Action recommandée : {merged_solutions[0] if merged_solutions else 'consulter un expert'}."
             )
             if db_tips:
-                interpretation += f"💡 {db_tips}"
+                interpretation += f"\n💡 Conseil : {db_tips}"
 
             # ── 5. Certitude ──────────────────────────────────────────────────────
             certitude = 90 if ref and db_causes else (75 if kb_causes else 40)
@@ -445,7 +630,10 @@ class DTCModelAI:
                 'meaning': final_meaning,
                 'severity': final_severity,
                 'certitude': certitude,
-                'interpretation': interpretation,
+                'interpretation': (
+                    f"Sur votre {brand} {model}, ce code indique : {final_meaning}."
+                ),
+                'chef_note': next((advice for advice in chef_advice if code[:5] in advice), None),
                 'symptoms': merged_symptoms,
                 'commonSymptoms': merged_symptoms,
                 'probable_causes': merged_causes,
@@ -470,23 +658,26 @@ class DTCModelAI:
 
         # ── Verdict global ────────────────────────────────────────────────────────
         if nb_critical > 0:
-            verdict = f"🔴 {nb_critical} panne(s) très graves — faut arrêter la voiture maintenant"
+            verdict = "⚠️ DANGER : Votre véhicule présente des pannes critiques. L'utilisation du véhicule est fortement déconseillée avant réparation."
         elif nb_high > 0:
-            verdict = f"🟠 {nb_high} panne(s) graves — faut prévoir de réparer ça vite"
+            verdict = "🔴 IMPORTANT : Plusieurs pannes graves ont été détectées. Une visite au garage est recommandée dans les plus brefs délais."
+        elif len(results) > 3:
+            verdict = "🟠 ATTENTION : De nombreuses anomalies ont été relevées. Un contrôle global du véhicule est conseillé pour éviter des pannes en cascade."
         elif results:
-            verdict = "🟡 Petits problèmes détectés — faut surveiller ça de près"
+            verdict = "🟢 SUIVI : Quelques anomalies mineures ont été détectées. À surveiller lors du prochain entretien."
         else:
-            verdict = "🟢 La voiture n'a rien, tout est bon"
+            verdict = "✅ RAS : Aucun défaut majeur n'a été identifié par l'analyse IA."
 
         return {
             'diagnostics': results,
             'summary': {
-                'verdict': verdict,
+                'verdict': vulcanize_text(verdict),
+                'chef_global_advice': chef_advice if chef_advice else ["Continuez l'entretien régulier de votre véhicule."],
                 'nb_codes': len(results),
                 'nb_critical': nb_critical,
                 'nb_high': nb_high,
                 'total_estimated_labor': total_labor,
-                'engine_version': 'IA Deep DTC v1.0 (DB + KB + Web)',
+                'engine_version': 'IA Deep DTC v4.2 (Standardized SAE + Smart Fallback)',
             }
         }
 
@@ -578,146 +769,152 @@ class DTCModelAI:
         # Syndrome turbo : charge élevée + pression collecteur basse + température air haute
         if load and map_p and iat:
             if load > 75 and map_p < 120 and iat > 50:
+                interpretation_text = (
+                    "Le moteur travaille intensément ({:.0f}%) mais l'admission d'air est insuffisante ({:.0f} kPa) "
+                    "et la température d'entrée est trop élevée ({:.0f}°C). Cela suggère un défaut du turbo. "
+                    "Causes possibles : durite de turbo percée ou débranchée, clapet (wastegate) bloqué, ou intercooler obstrué."
+                ).format(load, map_p, iat)
                 correlation_anomalies.append({
                     'type': 'correlation',
                     'pids_impliques': ['04', '0B', '0F'],
                     'valeurs': {'charge': load, 'pression_collecteur': map_p, 'temp_air': iat},
                     'dtc_code': 'CORR_TURBO',
-                    'label': 'Syndrome turbo défaillant',
+                    'label': 'Défaut de performance Turbo',
                     'severity': 'high',
                     'certitude': 82,
-                    'interpretation': (
-                        "Le moteur travaille trop fort ({:.0f}%) mais l'air ne rentre pas assez ({:.0f} kPa) "
-                        "et l'air qui entre est trop chaud ({:.0f}°C). Ça veut dire que le turbo ne souffle pas bien. "
-                        "Ce qui peut envoyer ça : durite de turbo percée, clapet (wastegate) bloqué ouvert, ou radiateur d'air (intercooler) bouché."
-                    ).format(load, map_p, iat),
+                    'interpretation': interpretation_text,
                     'actions': [
-                        "Regarder bien les tuyaux du turbo (chercher trou ou si c'est débranché)",
-                        "Contrôler le clapet du turbo (wastegate)",
-                        "Vérifier si le radiateur d'air n'est pas bouché ou percé",
-                        "Mesurer si le turbo souffle bien avec un manomètre",
+                        "Vérifier l'étanchéité des durites du turbo",
+                        "Contrôler le fonctionnement de la wastegate",
+                        "Inspecter l'intercooler (radiateur d'air)",
+                        "Mesurer la pression de suralimentation réelle",
                     ],
                 })
 
         # Syndrome alternateur défaillant : tension basse + RPM normal + charge élevée
         if volt and rpm and load:
             if volt < 12.5 and rpm > 800 and load > 40:
+                interpretation_text = (
+                    "La tension mesurée est de {:.1f}V alors que le moteur tourne à {:.0f} RPM. "
+                    "L'alternateur devrait fournir entre 13.8V et 14.8V. "
+                    "Causes probables : alternateur défectueux, régulateur hors service ou courroie détendue."
+                ).format(volt, rpm, load)
                 correlation_anomalies.append({
                     'type': 'correlation',
                     'pids_impliques': ['42', '0C', '04'],
                     'valeurs': {'tension': volt, 'rpm': rpm, 'charge': load},
                     'dtc_code': 'CORR_ALT',
-                    'label': 'Alternateur sous-performant',
+                    'label': 'Sous-performance de l\'alternateur',
                     'severity': 'high',
                     'certitude': 88,
-                    'interpretation': (
-                        "La batterie donne seulement {:.1f}V alors que le moteur tourne bien ({:.0f} RPM). "
-                        "Normalement, l'alternateur doit envoyer entre 13.8V et 14.8V. "
-                        "Ce qui peut envoyer ça : alternateur gâté, régulateur de courant mort, ou courroie qui glisse."
-                    ).format(volt, rpm, load),
+                    'interpretation': interpretation_text,
                     'actions': [
-                        "Contrôler si l'alternateur charge bien avec un multimètre (chercher 13.8V-14.8V)",
-                        "Vérifier si la courroie de l'alternateur est bien serrée",
-                        "Regarder les fils et les fiches de la batterie",
-                        "Vérifier si la masse du moteur est bien branchée",
+                        "Tester la charge de l'alternateur au multimètre (viser 13.8V-14.8V)",
+                        "Vérifier la tension de la courroie d'accessoires",
+                        "Inspecter les cosses et le câblage de la batterie",
+                        "Contrôler la mise à la terre (tresse de masse) du moteur",
                     ],
                 })
 
         # Syndrome refroidissement : température haute + RPM bas + charge faible (thermostat bloqué fermé)
         if temp and rpm and load:
             if temp > 95 and rpm < 1500 and load < 30:
+                interpretation_text = (
+                    "Le moteur est en surchauffe ({:.0f}°C) malgré un régime faible ({:.0f} RPM). "
+                    "Cela indique souvent un thermostat (calorstat) bloqué en position fermée, "
+                    "empêchant la circulation du liquide vers le radiateur. "
+                    "Attention : risque de rupture du joint de culasse si vous continuez à rouler."
+                ).format(temp, rpm, load)
                 correlation_anomalies.append({
                     'type': 'correlation',
                     'pids_impliques': ['05', '0C', '04'],
                     'valeurs': {'temp': temp, 'rpm': rpm, 'charge': load},
                     'dtc_code': 'CORR_THERMO',
-                    'label': 'Thermostat bloqué fermé (surchauffe au ralenti)',
+                    'label': 'Suspicion de thermostat bloqué',
                     'severity': 'critical',
                     'certitude': 91,
-                    'interpretation': (
-                        "Le moteur chauffe trop ({:.0f}°C) alors que tu ne roules pas vite ({:.0f} RPM). "
-                        "C'est souvent parce que le thermostat (vanne d'eau) est bloqué fermé. "
-                        "L'eau ne peut plus aller dans le radiateur pour se refroidir. "
-                        "Attention, si tu ne répares pas, tu vas griller le joint de culasse !"
-                    ).format(temp, rpm, load),
+                    'interpretation': interpretation_text,
                     'actions': [
-                        "ARRÊTE le moteur tout de suite si ça dépasse 110°C",
-                        "Attends que ça refroidisse, puis regarde le niveau de l'eau (liquide)",
-                        "Faut changer le thermostat (vanne d'eau) rapidement",
-                        "Regarde s'il n'y a pas de bulles dans l'eau (signe de joint de culasse)",
-                        "Vérifie si le ventilateur tourne bien",
+                        "COUPER le moteur immédiatement si la température dépasse 110°C",
+                        "Vérifier le niveau du liquide de refroidissement après refroidissement",
+                        "Remplacer le thermostat (calorstat)",
+                        "Vérifier l'absence de gaz de combustion dans le circuit (test CO2)",
+                        "Contrôler le déclenchement des motoventilateurs",
                     ],
                 })
 
         # Syndrome injection : charge élevée + RPM instable + papillon normal (injecteurs encrassés)
         if load and rpm and tps:
             if load > 70 and rpm < 1000 and tps < 20:
+                interpretation_text = (
+                    "Le moteur peine ({:.0f}%) malgré une faible sollicitation de l'accélérateur ({:.0f}%) et un régime instable ({:.0f} RPM). "
+                    "Le calculateur compense probablement un débit d'injection insuffisant. "
+                    "Causes possibles : injecteurs encrassés ou faiblesse de la pompe à carburant."
+                ).format(load, tps, rpm)
                 correlation_anomalies.append({
                     'type': 'correlation',
                     'pids_impliques': ['04', '0C', '11'],
                     'valeurs': {'charge': load, 'rpm': rpm, 'tps': tps},
                     'dtc_code': 'CORR_INJECT',
-                    'label': 'Injecteurs encrassés ou défaillants',
+                    'label': 'Défaut du système d\'injection',
                     'severity': 'high',
                     'certitude': 79,
-                    'interpretation': (
-                        "Le moteur travaille trop fort ({:.0f}%) alors que tu n'appuies pas beaucoup sur la pédale ({:.0f}%) et le moteur tremble ({:.0f} RPM). "
-                        "L'ordinateur essaie de compenser parce que les injecteurs ne crachent pas bien l'essence. "
-                        "Ce qui peut envoyer ça : injecteurs bouchés ou pompe à essence qui fatigue."
-                    ).format(load, tps, rpm),
+                    'interpretation': interpretation_text,
                     'actions': [
-                        "Faut nettoyer les injecteurs (avec produit ou machine ultrason)",
-                        "Contrôler si la pression de l'essence est bonne",
-                        "Vérifier si la pompe à essence travaille bien",
-                        "Changer le filtre à essence s'il est vieux",
+                        "Procéder au nettoyage des injecteurs (additif ou ultrasons)",
+                        "Mesurer la pression de la rampe d'injection",
+                        "Tester le débit de la pompe à carburant",
+                        "Remplacer le filtre à carburant si nécessaire",
                     ],
                 })
 
         # Syndrome huile dégradée : température huile élevée + température moteur normale
         if oil_t and temp:
             if oil_t > 120 and temp < 95:
+                interpretation_text = (
+                    "La température d'huile est excessive ({:.0f}°C) alors que la température moteur reste normale ({:.0f}°C). "
+                    "Cela suggère une huile dégradée, un niveau insuffisant ou un défaut de lubrification. "
+                    "Une huile surchauffée perd ses propriétés protectrices et risque d'endommager les paliers moteur."
+                ).format(oil_t, temp)
                 correlation_anomalies.append({
                     'type': 'correlation',
                     'pids_impliques': ['5C', '05'],
                     'valeurs': {'temp_huile': oil_t, 'temp_moteur': temp},
                     'dtc_code': 'CORR_HUILE',
-                    'label': 'Huile moteur dégradée ou niveau bas',
+                    'label': 'Surchauffe d\'huile moteur',
                     'severity': 'high',
                     'certitude': 84,
-                    'interpretation': (
-                        "L'huile chauffe trop ({:.0f}°C) alors que le moteur lui-même est normal ({:.0f}°C). "
-                        "C'est souvent parce que l'huile est vieille, n'a plus de force, ou qu'il n'y en a pas assez. "
-                        "Une huile trop chaude ne protège plus le moteur et va tout gâter à l'intérieur."
-                    ).format(oil_t, temp),
+                    'interpretation': interpretation_text,
                     'actions': [
-                        "Vérifier tout de suite le niveau de l'huile",
-                        "Regarder si l'huile est noire ou trop liquide (si oui, faut faire vidange)",
-                        "Faire la vidange rapidement avec une bonne huile",
-                        "Vérifier si le refroidisseur d'huile n'est pas bouché",
+                        "Contrôler immédiatement le niveau d'huile moteur",
+                        "Vérifier la viscosité et l'aspect de l'huile (vidange recommandée si noire)",
+                        "Effectuer une vidange avec une huile préconisée par le constructeur",
+                        "Vérifier l'état de l'échangeur huile/eau (si présent)",
                     ],
                 })
 
         # Syndrome consommation excessive : charge élevée + vitesse modérée + carburant qui baisse vite
         if load and speed and fuel:
             if load > 80 and speed < 80 and fuel < 30:
+                interpretation_text = (
+                    "La charge moteur est anormalement haute ({:.0f}%) pour une vitesse modérée ({:.0f} km/h). "
+                    "Cette résistance inhabituelle entraîne une surconsommation. "
+                    "Causes possibles : pneus sous-gonflés, étrier de frein grippé ou patinage de l'embrayage."
+                ).format(load, speed, fuel)
                 correlation_anomalies.append({
                     'type': 'correlation',
                     'pids_impliques': ['04', '0D', '2F'],
                     'valeurs': {'charge': load, 'vitesse': speed, 'carburant': fuel},
                     'dtc_code': 'CORR_CONSO',
-                    'label': 'Consommation carburant anormalement élevée',
+                    'label': 'Surconsommation anormale détectée',
                     'severity': 'medium',
                     'certitude': 74,
-                    'interpretation': (
-                        "Le moteur travaille trop fort ({:.0f}%) alors que tu roules doucement ({:.0f} km/h) et le carburant descend vite ({:.0f}%). "
-                        "C'est comme si quelque chose retenait la voiture. "
-                        "Ce qui peut envoyer ça : pneus pas bien gonflés, freins qui serrent tout seuls, ou embrayage qui glisse."
-                    ).format(load, speed, fuel),
+                    'interpretation': interpretation_text,
                     'actions': [
-                        "Vérifier la pression des pneus (pneu mou = voiture boit trop)",
-                        "Vérifier si les freins ne chauffent pas tous seuls (frein qui reste serré)",
-                        "Regarder si l'embrayage ne glisse pas",
-                        "Changer le filtre à air s'il est trop sale (moteur étouffe)",
+                        "Vérifier la pression de gonflage des pneumatiques",
+                        "Contrôler si un disque de frein chauffe anormalement (étrier grippé)",
+                        "Tester l'absence de patinage du disque d'embrayage",
+                        "Remplacer le filtre à air s'il est colmaté",
                     ],
                 })
 
@@ -744,6 +941,318 @@ class DTCModelAI:
                         "Contrôler les bornes de batterie (oxydation = résistance supplémentaire)",
                         "Mesurer la tension de charge de l'alternateur (13.8-14.8V moteur tournant)",
                         "Remplacer la batterie si > 4 ans ou capacité < 70% du nominal",
+                    ],
+                })
+
+        # ── DÉTECTION COURTS-CIRCUITS & ANOMALIES ÉLECTRIQUES ────────────────────
+
+        # Court-circuit masse : tension anormalement haute moteur tournant (régulateur court-circuité)
+        if volt and rpm:
+            if volt > 15.5 and rpm > 600:
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['42', '0C'],
+                    'valeurs': {'tension': volt, 'rpm': rpm},
+                    'dtc_code': 'CORR_CC_ALT',
+                    'label': '⚡ Court-circuit probable — Surtension alternateur',
+                    'severity': 'critical',
+                    'certitude': 94,
+                    'interpretation': (
+                        "Tension de {:.1f}V mesurée moteur tournant ({:.0f} RPM). "
+                        "Une tension supérieure à 15.5V indique un régulateur de tension défaillant ou un court-circuit dans le circuit de charge. "
+                        "Risque immédiat : destruction de l'électronique embarquée (calculateur, capteurs, fusibles), "
+                        "surchauffe de la batterie pouvant provoquer un incendie. "
+                        "Couper les équipements électriques non essentiels immédiatement."
+                    ).format(volt, rpm),
+                    'actions': [
+                        "⚠️ URGENT : Couper la climatisation et les équipements électriques non vitaux",
+                        "Mesurer la tension aux bornes de la batterie avec un multimètre",
+                        "Vérifier le régulateur de tension intégré à l'alternateur",
+                        "Contrôler le câblage entre alternateur et batterie (court-circuit possible)",
+                        "Remplacer l'alternateur ou son régulateur de tension",
+                        "Vérifier l'état de la batterie après l'incident (risque de gonflement)",
+                    ],
+                })
+
+        # Court-circuit capteur : tension batterie instable (oscillation rapide simulée par valeur hors plage)
+        if volt and rpm:
+            if 11.8 < volt < 12.5 and rpm > 1500 and load and load > 50:
+                # Alternateur qui charge insuffisamment sous charge = début de défaillance
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['42', '0C', '04'],
+                    'valeurs': {'tension': volt, 'rpm': rpm, 'charge': load},
+                    'dtc_code': 'CORR_ALT_PRED',
+                    'label': '🔮 Prédiction : Alternateur en début de défaillance',
+                    'severity': 'high',
+                    'certitude': 78,
+                    'interpretation': (
+                        "Tension de {:.1f}V sous charge ({:.0f}% à {:.0f} RPM). "
+                        "Un alternateur sain doit maintenir 13.8V-14.8V même sous forte charge. "
+                        "Cette valeur basse sous charge indique une usure des charbons, "
+                        "un enroulement partiellement court-circuité, ou une diode de redressement défaillante. "
+                        "Sans intervention, la batterie se déchargera progressivement et le véhicule s'arrêtera."
+                    ).format(volt, load, rpm),
+                    'actions': [
+                        "Tester l'alternateur sur banc de charge (mesure ampérage réel)",
+                        "Vérifier les charbons de l'alternateur (usure > 50% = remplacement)",
+                        "Contrôler les diodes de redressement (test au multimètre en mode diode)",
+                        "Inspecter la courroie d'accessoires (glissement = sous-charge)",
+                        "Prévoir le remplacement de l'alternateur avant panne totale",
+                    ],
+                })
+
+        # Court-circuit sonde lambda / richesse : fuel trim extrême
+        fuel_trim_st = pid_values.get('06')  # Short Term Fuel Trim Bank 1
+        fuel_trim_lt = pid_values.get('07')  # Long Term Fuel Trim Bank 1
+        o2_b1s1 = pid_values.get('14')       # O2 Sensor Bank1 Sensor1
+        o2_b1s2 = pid_values.get('15')       # O2 Sensor Bank1 Sensor2
+
+        if fuel_trim_st is not None and fuel_trim_lt is not None:
+            if abs(fuel_trim_st) > 20 and abs(fuel_trim_lt) > 15:
+                direction = "trop riche (trop de carburant)" if fuel_trim_st < 0 else "trop pauvre (manque de carburant)"
+                dtc_pred = 'CORR_LAMBDA_RICH' if fuel_trim_st < 0 else 'CORR_LAMBDA_LEAN'
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['06', '07'],
+                    'valeurs': {'fuel_trim_court': fuel_trim_st, 'fuel_trim_long': fuel_trim_lt},
+                    'dtc_code': dtc_pred,
+                    'label': f'⚡ Court-circuit sonde lambda ou mélange {direction}',
+                    'severity': 'high',
+                    'certitude': 87,
+                    'interpretation': (
+                        "Correction carburant court terme : {:.1f}% / long terme : {:.1f}%. "
+                        "Des corrections aussi importantes ({}) indiquent que le calculateur lutte en permanence pour corriger le mélange. "
+                        "Causes possibles : sonde lambda court-circuitée ou encrassée, injecteur fuyant (riche) ou bouché (pauvre), "
+                        "prise d'air sur le collecteur d'admission (pauvre), ou catalyseur détérioré."
+                    ).format(fuel_trim_st, fuel_trim_lt, direction),
+                    'actions': [
+                        "Lire les valeurs de la sonde lambda avec un oscilloscope (signal doit osciller 0.1V-0.9V)",
+                        "Vérifier l'étanchéité du collecteur d'admission (spray carbu moteur tournant)",
+                        "Contrôler les injecteurs (fuite statique = mélange riche)",
+                        "Mesurer la résistance de la sonde lambda (court-circuit si < 5 Ohms)",
+                        "Remplacer la sonde lambda si signal plat ou hors plage",
+                    ],
+                })
+
+        # Sonde lambda morte (signal fixe = court-circuit interne)
+        if o2_b1s1 is not None:
+            if o2_b1s1 < 0.05 or o2_b1s1 > 0.95:
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['14'],
+                    'valeurs': {'o2_b1s1': o2_b1s1},
+                    'dtc_code': 'CORR_O2_DEAD',
+                    'label': '⚡ Sonde lambda probablement morte (signal figé)',
+                    'severity': 'high',
+                    'certitude': 85,
+                    'interpretation': (
+                        "Signal O2 figé à {:.3f}V. Une sonde lambda saine oscille rapidement entre 0.1V et 0.9V. "
+                        "Un signal bloqué en bas indique un court-circuit vers la masse (fil coupé ou sonde grillée). "
+                        "Un signal bloqué en haut indique un court-circuit vers le +12V. "
+                        "Conséquence : le moteur tourne en boucle ouverte, consommation et pollution augmentent fortement."
+                    ).format(o2_b1s1),
+                    'actions': [
+                        "Mesurer la résistance du fil de signal de la sonde (court-circuit si < 1 Ohm vers masse)",
+                        "Vérifier la tension d'alimentation du chauffage de sonde (doit être ~12V)",
+                        "Remplacer la sonde lambda (durée de vie : 80 000-120 000 km)",
+                        "Contrôler l'absence de fuite d'échappement avant la sonde",
+                    ],
+                })
+
+        # ── SYNDROMES PRÉDICTIFS AVANCÉS ─────────────────────────────────────────
+
+        # Prédiction : usure bobine d'allumage (RPM instable + charge élevée + temp normale)
+        if rpm and load and temp:
+            if 600 < rpm < 900 and load > 25 and temp > 70 and tps and tps < 5:
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['0C', '04', '05', '11'],
+                    'valeurs': {'rpm': rpm, 'charge': load, 'temp': temp},
+                    'dtc_code': 'CORR_BOBINE_PRED',
+                    'label': '🔮 Prédiction : Bobine d\'allumage ou bougie en fin de vie',
+                    'severity': 'medium',
+                    'certitude': 72,
+                    'interpretation': (
+                        "Ralenti instable ({:.0f} RPM) avec charge élevée ({:.0f}%) moteur chaud ({:.0f}°C). "
+                        "Ce profil est caractéristique d'un raté d'allumage intermittent sur un ou plusieurs cylindres. "
+                        "Causes probables : bobine d'allumage en début de défaillance (résistance secondaire hors tolérance), "
+                        "bougie encrassée ou électrode usée, ou fil de bougie fissuré. "
+                        "Sans intervention, risque de catalyseur endommagé par les hydrocarbures imbrûlés."
+                    ).format(rpm, load, temp),
+                    'actions': [
+                        "Lire les ratés d'allumage par cylindre (PID $0301-$0304)",
+                        "Mesurer la résistance des bobines (primaire : 0.5-2 Ohms, secondaire : 6-15 kOhms)",
+                        "Inspecter les bougies (électrode usée, dépôts noirs = richesse, blancs = pauvreté)",
+                        "Remplacer bougies et bobines si > 60 000 km sans entretien",
+                        "Vérifier l'absence de fissure sur les fils haute tension",
+                    ],
+                })
+
+        # Prédiction : vanne EGR encrassée (charge élevée + RPM bas + temp élevée)
+        if load and rpm and temp:
+            if load > 60 and rpm < 1200 and temp > 85:
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['04', '0C', '05'],
+                    'valeurs': {'charge': load, 'rpm': rpm, 'temp': temp},
+                    'dtc_code': 'CORR_EGR_PRED',
+                    'label': '🔮 Prédiction : Vanne EGR encrassée ou bloquée',
+                    'severity': 'medium',
+                    'certitude': 68,
+                    'interpretation': (
+                        "Charge moteur élevée ({:.0f}%) à bas régime ({:.0f} RPM) avec température haute ({:.0f}°C). "
+                        "La vanne EGR (recirculation des gaz d'échappement) encrassée peut rester ouverte en permanence, "
+                        "introduisant des gaz brûlés dans l'admission et réduisant la puissance. "
+                        "Symptômes associés : ralenti instable, à-coups à l'accélération, fumée noire."
+                    ).format(load, rpm, temp),
+                    'actions': [
+                        "Nettoyer la vanne EGR avec un spray décarbonisant",
+                        "Vérifier le fonctionnement électrique de la vanne (signal PWM du calculateur)",
+                        "Contrôler le tuyau de dépression de la vanne EGR (si pneumatique)",
+                        "Remplacer la vanne EGR si nettoyage insuffisant",
+                        "Effectuer un décalaminage moteur (injection d'hydrogène ou additif)",
+                    ],
+                })
+
+        # Prédiction : pompe à eau en début de défaillance (temp élevée + RPM variable)
+        if temp and rpm and volt:
+            if temp > 92 and rpm > 2000 and volt > 13.0:
+                # Temp élevée malgré régime élevé (la pompe devrait refroidir davantage)
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['05', '0C', '42'],
+                    'valeurs': {'temp': temp, 'rpm': rpm, 'volt': volt},
+                    'dtc_code': 'CORR_POMPE_EAU',
+                    'label': '🔮 Prédiction : Pompe à eau en début de défaillance',
+                    'severity': 'high',
+                    'certitude': 76,
+                    'interpretation': (
+                        "Température moteur élevée ({:.0f}°C) malgré un régime soutenu ({:.0f} RPM). "
+                        "À régime élevé, la pompe à eau entraînée par la courroie devrait augmenter le débit de refroidissement. "
+                        "Si la température reste haute ou monte, cela indique une pompe à eau dont l'ailette est corrodée ou cassée, "
+                        "ou une courroie de distribution/accessoires qui glisse. "
+                        "Risque : surchauffe progressive menant à la casse du joint de culasse."
+                    ).format(temp, rpm),
+                    'actions': [
+                        "Vérifier le niveau et l'état du liquide de refroidissement (couleur, présence d'huile)",
+                        "Contrôler la tension de la courroie de distribution (si pompe entraînée par distribution)",
+                        "Inspecter la pompe à eau pour détecter une fuite (trace blanche autour de la pompe)",
+                        "Remplacer la pompe à eau lors du prochain remplacement de courroie de distribution",
+                        "Vérifier le fonctionnement des motoventilateurs (déclenchement à 90°C)",
+                    ],
+                })
+
+        # Prédiction : catalyseur en fin de vie (O2 aval similaire à O2 amont)
+        if o2_b1s1 is not None and o2_b1s2 is not None:
+            # Si les deux sondes ont des signaux similaires, le catalyseur ne fait plus son travail
+            if abs(o2_b1s1 - o2_b1s2) < 0.1 and o2_b1s1 > 0.3:
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['14', '15'],
+                    'valeurs': {'o2_amont': o2_b1s1, 'o2_aval': o2_b1s2},
+                    'dtc_code': 'CORR_CATA_PRED',
+                    'label': '🔮 Prédiction : Catalyseur en fin de vie',
+                    'severity': 'medium',
+                    'certitude': 80,
+                    'interpretation': (
+                        "Sonde O2 amont : {:.3f}V / aval : {:.3f}V. "
+                        "Un catalyseur sain transforme les gaz et la sonde aval doit avoir un signal stable (~0.6-0.7V). "
+                        "Quand les deux sondes oscillent de façon similaire, le catalyseur est épuisé et ne filtre plus. "
+                        "Conséquences : pollution excessive, perte de puissance, risque de bouchage du catalyseur."
+                    ).format(o2_b1s1, o2_b1s2),
+                    'actions': [
+                        "Effectuer un test d'efficacité catalyseur avec un analyseur de gaz",
+                        "Vérifier l'absence de ratés d'allumage (détruisent le catalyseur)",
+                        "Contrôler l'absence de fuite d'huile dans les gaz (fumée bleue)",
+                        "Remplacer le catalyseur (coût élevé — prévoir devis)",
+                        "Vérifier la conformité au contrôle technique antipollution",
+                    ],
+                })
+
+        # Prédiction : joint de culasse en début de défaillance (temp élevée + tension basse + RPM instable)
+        if temp and volt and rpm:
+            if temp > 100 and volt < 12.8 and 400 < rpm < 800:
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['05', '42', '0C'],
+                    'valeurs': {'temp': temp, 'tension': volt, 'rpm': rpm},
+                    'dtc_code': 'CORR_CULASSE_PRED',
+                    'label': '🔮 Prédiction CRITIQUE : Possible début de casse joint de culasse',
+                    'severity': 'critical',
+                    'certitude': 82,
+                    'interpretation': (
+                        "Combinaison dangereuse : température {:.0f}°C + tension {:.1f}V + ralenti instable {:.0f} RPM. "
+                        "Ce profil multi-symptômes est caractéristique d'un joint de culasse qui commence à lâcher : "
+                        "les gaz de combustion entrent dans le circuit de refroidissement (surchauffe), "
+                        "le liquide de refroidissement entre dans les cylindres (ralenti instable, fumée blanche), "
+                        "et la batterie se décharge car le moteur tourne mal. "
+                        "ARRÊTER le moteur immédiatement pour éviter la casse totale du moteur."
+                    ).format(temp, volt, rpm),
+                    'actions': [
+                        "🚨 ARRÊTER le moteur immédiatement si température > 110°C",
+                        "Vérifier la présence de mousse ou d'huile dans le vase d'expansion",
+                        "Contrôler si la fumée d'échappement est blanche (liquide de refroidissement brûlé)",
+                        "Tester la présence de gaz CO2 dans le circuit de refroidissement (test chimique)",
+                        "Faire remorquer le véhicule — ne pas rouler avec ce profil de symptômes",
+                        "Devis de remplacement joint de culasse chez un mécanicien expert",
+                    ],
+                })
+
+        # Prédiction : VVT (calage variable) défaillant (charge élevée + RPM élevé + temp normale)
+        if load and rpm and temp and tps:
+            if load > 80 and rpm > 3000 and temp < 90 and tps > 60:
+                # Charge très élevée à haut régime avec papillon ouvert = moteur qui manque de puissance en haut
+                if load > rpm / 100:  # ratio anormal charge/RPM
+                    correlation_anomalies.append({
+                        'type': 'correlation',
+                        'pids_impliques': ['04', '0C', '05', '11'],
+                        'valeurs': {'charge': load, 'rpm': rpm, 'tps': tps},
+                        'dtc_code': 'CORR_VVT_PRED',
+                        'label': '🔮 Prédiction : Système VVT (calage variable) défaillant',
+                        'severity': 'medium',
+                        'certitude': 65,
+                        'interpretation': (
+                            "Charge {:.0f}% à {:.0f} RPM avec papillon ouvert à {:.0f}%. "
+                            "Le rapport charge/régime est anormal : le moteur travaille trop fort pour sa vitesse de rotation. "
+                            "Cela peut indiquer un système de calage variable des soupapes (VVT/VANOS/VTEC) défaillant, "
+                            "bloqué en position basse performance. "
+                            "Cause : huile moteur dégradée (le VVT est hydraulique), solénoïde VVT encrassé, ou filtre à huile colmaté."
+                        ).format(load, rpm, tps),
+                        'actions': [
+                            "Effectuer une vidange d'huile avec huile de viscosité préconisée",
+                            "Nettoyer ou remplacer le solénoïde de calage variable",
+                            "Vérifier la pression d'huile moteur (doit être > 2 bar à chaud)",
+                            "Contrôler le filtre à huile (remplacement si > 10 000 km)",
+                            "Lire les codes DTC spécifiques au VVT (P0010-P0015)",
+                        ],
+                    })
+
+        # Prédiction : roulements de roue ou transmission (vitesse élevée + charge élevée + RPM normal)
+        if speed and load and rpm:
+            if speed > 80 and load > 70 and rpm < 2500:
+                # Charge élevée pour la vitesse et le régime = résistance mécanique anormale
+                correlation_anomalies.append({
+                    'type': 'correlation',
+                    'pids_impliques': ['0D', '04', '0C'],
+                    'valeurs': {'vitesse': speed, 'charge': load, 'rpm': rpm},
+                    'dtc_code': 'CORR_ROULEMENT_PRED',
+                    'label': '🔮 Prédiction : Roulement de roue ou transmission en usure',
+                    'severity': 'medium',
+                    'certitude': 63,
+                    'interpretation': (
+                        "Charge moteur élevée ({:.0f}%) à {:.0f} km/h pour seulement {:.0f} RPM. "
+                        "Ce ratio indique une résistance mécanique anormale dans la chaîne cinématique. "
+                        "Causes possibles : roulement de roue en début d'usure (bruit de roulement à vitesse constante), "
+                        "différentiel ou boîte de vitesses avec jeu excessif, ou frein qui frotte légèrement. "
+                        "Sans intervention, risque de blocage de roue ou de casse de transmission."
+                    ).format(load, speed, rpm),
+                    'actions': [
+                        "Écouter attentivement les bruits de roulement (grondement qui varie avec la vitesse)",
+                        "Vérifier le jeu des roulements de roue (secouer la roue en diagonale)",
+                        "Contrôler la température des moyeux après un trajet (roulement chaud = défaillant)",
+                        "Inspecter le niveau d'huile de boîte de vitesses et de pont",
+                        "Vérifier l'absence de frottement des plaquettes de frein",
                     ],
                 })
 
@@ -825,9 +1334,11 @@ class DTCModelAI:
         enriched_results.sort(key=lambda x: (severity_order.get(x['severity'], 9), -x['certitude']))
 
         # ── 5. VERDICT GLOBAL ─────────────────────────────────────────────────────
-        nb_critical = sum(1 for r in enriched_results if r['severity'] == 'critical')
-        nb_high     = sum(1 for r in enriched_results if r['severity'] == 'high')
-        nb_corr     = sum(1 for r in enriched_results if r['type'] == 'correlation')
+        nb_critical  = sum(1 for r in enriched_results if r['severity'] == 'critical')
+        nb_high      = sum(1 for r in enriched_results if r['severity'] == 'high')
+        nb_corr      = sum(1 for r in enriched_results if r['type'] == 'correlation')
+        nb_cc        = sum(1 for r in enriched_results if '⚡' in r.get('label', ''))
+        nb_pred      = sum(1 for r in enriched_results if '🔮' in r.get('label', ''))
 
         if nb_critical > 0:
             verdict = "🔴 DANGER IMMÉDIAT — Arrêt recommandé"
@@ -835,11 +1346,23 @@ class DTCModelAI:
                 f"{nb_critical} anomalie(s) critique(s) détectée(s). "
                 "Continuer à rouler risque d'endommager gravement le moteur ou de compromettre la sécurité."
             )
+        elif nb_cc > 0:
+            verdict = "⚡ COURT-CIRCUIT DÉTECTÉ — Vérification électrique urgente"
+            verdict_detail = (
+                f"{nb_cc} anomalie(s) électrique(s) détectée(s). "
+                "Un court-circuit non traité peut détruire l'électronique embarquée ou provoquer un incendie."
+            )
         elif nb_high > 0:
             verdict = "🟠 ATTENTION — Intervention urgente requise"
             verdict_detail = (
                 f"{nb_high} anomalie(s) sévère(s) détectée(s). "
                 "Planifier une intervention chez un mécanicien dans les 48-72h."
+            )
+        elif nb_pred > 0:
+            verdict = "🔮 PRÉDICTION — Pannes à venir détectées"
+            verdict_detail = (
+                f"{nb_pred} panne(s) insoupçonnée(s) prédite(s) avant qu'elles ne surviennent. "
+                "Planifier un contrôle préventif pour éviter une immobilisation."
             )
         elif enriched_results:
             verdict = "🟡 SURVEILLANCE — Anomalies mineures détectées"
@@ -858,123 +1381,565 @@ class DTCModelAI:
                 'anomalies_critiques': nb_critical,
                 'anomalies_severes': nb_high,
                 'syndromes_caches': nb_corr,
-                'engine_version': 'IA Deep Analyze v3.0 (Multi-PID Correlation)',
+                'courts_circuits': nb_cc,
+                'predictions': nb_pred,
+                'engine_version': 'IA Deep Analyze v4.0 (Court-circuit · Prédictif · Multi-PID)',
             }
         }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # COUCHE 4 — ANALYSE TEMPORELLE DES TENDANCES
+    # Détecte si un paramètre monte/descend de façon anormale sur la durée
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def analyze_temporal_trends(pid_history_list):
+        """
+        Analyse une liste chronologique de snapshots PID pour détecter des tendances.
+
+        pid_history_list : liste de dicts [{pid: value, ...}, ...] du plus ancien au plus récent.
+                           Chaque dict représente une lecture (intervalle ~1s).
+
+        Retourne une liste d'alertes de tendance avec prédiction temporelle.
+        """
+        if not pid_history_list or len(pid_history_list) < 10:
+            return []
+
+        trend_alerts = []
+
+        TREND_PIDS = {
+            '05': {'name': 'Température moteur', 'unit': '°C',  'danger_threshold': 105, 'critical_threshold': 115},
+            '5C': {'name': 'Température huile',  'unit': '°C',  'danger_threshold': 125, 'critical_threshold': 140},
+            '42': {'name': 'Tension batterie',   'unit': 'V',   'danger_threshold': 11.5,'critical_threshold': 11.0, 'descending': True},
+            '2F': {'name': 'Niveau carburant',   'unit': '%',   'danger_threshold': 15,  'critical_threshold': 8,   'descending': True},
+            '0C': {'name': 'Régime moteur',      'unit': 'RPM', 'danger_threshold': 5500,'critical_threshold': 6500},
+        }
+
+        window = min(20, len(pid_history_list))
+        recent = pid_history_list[-window:]
+
+        for pid, config in TREND_PIDS.items():
+            values = [snap.get(pid) for snap in recent if snap.get(pid) is not None]
+            if len(values) < 5:
+                continue
+
+            n_v = len(values)
+            x_mean = (n_v - 1) / 2
+            y_mean = sum(values) / n_v
+            numerator   = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
+            denominator = sum((i - x_mean) ** 2 for i in range(n_v))
+            slope = numerator / denominator if denominator != 0 else 0
+
+            current_val = values[-1]
+            is_descending = config.get('descending', False)
+            min_slope = 0.05 if pid in ('05', '5C', '0C') else 0.005
+
+            if is_descending:
+                if slope < -min_slope and current_val > config['critical_threshold']:
+                    seconds_to_danger   = (current_val - config['danger_threshold'])   / abs(slope) if slope != 0 else 9999
+                    seconds_to_critical = (current_val - config['critical_threshold']) / abs(slope) if slope != 0 else 9999
+                    if seconds_to_critical < 300:
+                        severity = 'critical' if seconds_to_critical < 60 else 'high'
+                        trend_alerts.append({
+                            'type': 'trend',
+                            'pid': pid,
+                            'label': f'📉 Tendance : {config["name"]} en chute',
+                            'current_value': round(current_val, 1),
+                            'slope_per_second': round(slope, 4),
+                            'unit': config['unit'],
+                            'seconds_to_danger': max(0, round(seconds_to_danger)),
+                            'seconds_to_critical': max(0, round(seconds_to_critical)),
+                            'severity': severity,
+                            'certitude': 85,
+                            'interpretation': (
+                                f"{config['name']} actuelle : {current_val:.1f}{config['unit']}. "
+                                f"Tendance à la baisse de {abs(slope):.3f}{config['unit']}/s. "
+                                f"Seuil danger ({config['danger_threshold']}{config['unit']}) atteint dans ~{max(0,round(seconds_to_danger))}s. "
+                                f"Seuil critique ({config['critical_threshold']}{config['unit']}) dans ~{max(0,round(seconds_to_critical))}s."
+                            ),
+                            'actions': [
+                                f"Surveiller {config['name']} en continu",
+                                "Préparer un arrêt si la valeur continue de baisser",
+                            ],
+                        })
+            else:
+                if slope > min_slope and current_val < config['critical_threshold']:
+                    seconds_to_danger   = (config['danger_threshold']   - current_val) / slope if slope != 0 else 9999
+                    seconds_to_critical = (config['critical_threshold'] - current_val) / slope if slope != 0 else 9999
+                    if seconds_to_critical < 300:
+                        severity = 'critical' if seconds_to_critical < 60 else 'high'
+                        trend_alerts.append({
+                            'type': 'trend',
+                            'pid': pid,
+                            'label': f'📈 Tendance : {config["name"]} en hausse anormale',
+                            'current_value': round(current_val, 1),
+                            'slope_per_second': round(slope, 4),
+                            'unit': config['unit'],
+                            'seconds_to_danger': max(0, round(seconds_to_danger)),
+                            'seconds_to_critical': max(0, round(seconds_to_critical)),
+                            'severity': severity,
+                            'certitude': 85,
+                            'interpretation': (
+                                f"{config['name']} actuelle : {current_val:.1f}{config['unit']}. "
+                                f"Tendance à la hausse de {slope:.3f}{config['unit']}/s. "
+                                f"Seuil danger ({config['danger_threshold']}{config['unit']}) atteint dans ~{max(0,round(seconds_to_danger))}s. "
+                                f"Seuil critique ({config['critical_threshold']}{config['unit']}) dans ~{max(0,round(seconds_to_critical))}s."
+                            ),
+                            'actions': [
+                                f"Surveiller {config['name']} en continu",
+                                "Réduire la charge moteur si possible",
+                                "Prévoir un arrêt si la tendance se confirme",
+                            ],
+                        })
+
+        return trend_alerts
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # COUCHE 5 — APPRENTISSAGE PAR VÉHICULE (BASELINE)
+    # Mémorise les valeurs normales de CE véhicule et alerte sur les écarts
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def update_vehicle_baseline(vehicle_id, pid_values):
+        """
+        Met à jour la baseline d'un véhicule avec les nouvelles valeurs PID.
+        Utilise une moyenne mobile exponentielle (EMA) pour un apprentissage progressif.
+        """
+        try:
+            from api.models import VehicleBaseline, Vehicle
+            vehicle = Vehicle.objects.get(pk=vehicle_id)
+            baseline, _ = VehicleBaseline.objects.get_or_create(vehicle=vehicle)
+
+            PID_FIELD_MAP = {
+                '0C': 'avg_rpm',        '05': 'avg_coolant_temp',
+                '5C': 'avg_oil_temp',   '04': 'avg_engine_load',
+                '42': 'avg_voltage',    '06': 'avg_fuel_trim_st',
+                '07': 'avg_fuel_trim_lt','0B': 'avg_map_pressure',
+                '0F': 'avg_iat',        '11': 'avg_throttle',
+            }
+            STD_FIELD_MAP = {
+                '0C': 'std_rpm', '05': 'std_coolant_temp',
+                '04': 'std_engine_load', '42': 'std_voltage',
+            }
+
+            n = baseline.sample_count
+            alpha = max(0.02, 1.0 / (n + 1)) if n < 500 else 0.02
+
+            for pid, field in PID_FIELD_MAP.items():
+                val = pid_values.get(pid)
+                if val is None:
+                    continue
+                current = getattr(baseline, field)
+                setattr(baseline, field, val if current is None else alpha * val + (1 - alpha) * current)
+
+            for pid, field in STD_FIELD_MAP.items():
+                val = pid_values.get(pid)
+                avg_field = PID_FIELD_MAP.get(pid)
+                if val is None or avg_field is None:
+                    continue
+                avg_val = getattr(baseline, avg_field)
+                if avg_val is None:
+                    continue
+                deviation = abs(val - avg_val)
+                current_std = getattr(baseline, field)
+                setattr(baseline, field, deviation if current_std is None else alpha * deviation + (1 - alpha) * current_std)
+
+            baseline.sample_count = n + 1
+            baseline.is_mature = baseline.sample_count >= 500
+            baseline.save()
+            return True
+        except Exception as e:
+            logger.warning(f"[Baseline] Erreur mise à jour baseline véhicule {vehicle_id}: {e}")
+            return False
+
+    @staticmethod
+    def analyze_baseline_deviation(vehicle_id, pid_values):
+        """
+        Compare les valeurs PID actuelles à la baseline apprise du véhicule.
+        Retourne des alertes si un paramètre s'écarte anormalement de la normale.
+        Nécessite au moins 100 lectures pour être fiable.
+        """
+        try:
+            from api.models import VehicleBaseline, Vehicle
+            vehicle = Vehicle.objects.get(pk=vehicle_id)
+            baseline = VehicleBaseline.objects.filter(vehicle=vehicle).first()
+        except Exception:
+            return []
+
+        if not baseline or baseline.sample_count < 100:
+            return []
+
+        deviation_alerts = []
+
+        CHECKS = [
+            ('0C', baseline.avg_rpm,         baseline.std_rpm,         'RPM',               'tr/min', 3.0),
+            ('05', baseline.avg_coolant_temp, baseline.std_coolant_temp,'Température moteur', '°C',    2.5),
+            ('04', baseline.avg_engine_load,  baseline.std_engine_load, 'Charge moteur',      '%',     2.5),
+            ('42', baseline.avg_voltage,      baseline.std_voltage,     'Tension batterie',   'V',     2.0),
+        ]
+
+        for pid, avg, std, name, unit, threshold_sigma in CHECKS:
+            val = pid_values.get(pid)
+            if val is None or avg is None or std is None or std < 0.1:
+                continue
+            sigma = abs(val - avg) / std
+            if sigma >= threshold_sigma:
+                direction = "supérieure" if val > avg else "inférieure"
+                severity = 'critical' if sigma >= threshold_sigma * 1.5 else 'high' if sigma >= threshold_sigma * 1.2 else 'medium'
+                deviation_alerts.append({
+                    'type': 'baseline_deviation',
+                    'pid': pid,
+                    'label': f'🧠 Écart baseline : {name} anormale pour ce véhicule',
+                    'current_value': round(val, 1),
+                    'baseline_avg': round(avg, 1),
+                    'baseline_std': round(std, 2),
+                    'sigma': round(sigma, 1),
+                    'unit': unit,
+                    'severity': severity,
+                    'certitude': min(95, int(60 + sigma * 10)),
+                    'interpretation': (
+                        f"{name} actuelle : {val:.1f}{unit}. "
+                        f"Valeur normale pour ce véhicule : {avg:.1f} ± {std:.1f}{unit}. "
+                        f"Écart de {sigma:.1f}σ ({direction} à la normale). "
+                        f"Ce véhicule se comporte différemment de ses habitudes — investigation recommandée."
+                    ),
+                    'actions': [
+                        "Comparer avec les sessions précédentes de ce véhicule",
+                        "Vérifier si un entretien récent a modifié le comportement",
+                        "Lancer une analyse IA complète pour identifier la cause",
+                    ],
+                    'baseline_maturity': baseline.sample_count,
+                })
+
+        return deviation_alerts
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # COUCHE 6 — MODÈLE ML (RANDOM FOREST) — PRÊT POUR PRODUCTION
+    # Désactivé jusqu'à accumulation de données réelles suffisantes
+    # ══════════════════════════════════════════════════════════════════════════
+
+    ML_FEATURES = ['rpm', 'coolant_temp', 'oil_temp', 'engine_load', 'voltage',
+                   'speed', 'throttle', 'fuel_trim_st', 'fuel_trim_lt',
+                   'map_pressure', 'iat', 'o2_upstream', 'o2_downstream', 'maf']
+
+    @staticmethod
+    def record_pid_snapshot(vehicle_id, pid_values, anomaly_result=None):
+        """
+        Enregistre un snapshot PID en base pour alimenter l'entraînement ML futur.
+        À appeler à chaque cycle live (toutes les ~2s).
+        """
+        try:
+            from api.models import VehiclePIDHistory, Vehicle
+            vehicle = Vehicle.objects.get(pk=vehicle_id)
+
+            has_anomaly = False
+            severity = ''
+            codes = []
+            if anomaly_result and anomaly_result.get('status') == 'anomalies_detected':
+                anomalies = anomaly_result.get('anomalies', [])
+                if anomalies:
+                    has_anomaly = True
+                    severity = anomalies[0].get('severity', '')
+                    codes = [a.get('dtc_code', '') for a in anomalies]
+
+            VehiclePIDHistory.objects.create(
+                vehicle=vehicle,
+                rpm=pid_values.get('0C'),
+                coolant_temp=pid_values.get('05'),
+                oil_temp=pid_values.get('5C'),
+                engine_load=pid_values.get('04'),
+                voltage=pid_values.get('42'),
+                speed=pid_values.get('0D'),
+                throttle=pid_values.get('11'),
+                fuel_level=pid_values.get('2F'),
+                fuel_trim_st=pid_values.get('06'),
+                fuel_trim_lt=pid_values.get('07'),
+                map_pressure=pid_values.get('0B'),
+                iat=pid_values.get('0F'),
+                o2_upstream=pid_values.get('14'),
+                o2_downstream=pid_values.get('15'),
+                maf=pid_values.get('10'),
+                has_anomaly=has_anomaly,
+                anomaly_severity=severity,
+                anomaly_codes=codes,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"[ML] Erreur enregistrement snapshot PID: {e}")
+            return False
+
+    @staticmethod
+    def train_vehicle_ml_model(vehicle_id=None, min_samples=500):
+        """
+        Entraîne un modèle Random Forest sur l'historique PID d'un véhicule.
+        Nécessite au moins `min_samples` enregistrements labelisés.
+        En production : appeler via une tâche Celery planifiée (ex: toutes les nuits).
+        """
+        try:
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.model_selection import train_test_split
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+            from sklearn.preprocessing import StandardScaler
+            import numpy as np
+            from api.models import VehiclePIDHistory, VehicleMLModel, Vehicle
+        except ImportError:
+            logger.error("[ML] scikit-learn non installé. Installer avec: pip install scikit-learn numpy")
+            return None
+
+        try:
+            qs = VehiclePIDHistory.objects.all()
+            if vehicle_id:
+                qs = qs.filter(vehicle_id=vehicle_id)
+
+            total = qs.count()
+            if total < min_samples:
+                logger.warning(f"[ML] Données insuffisantes : {total}/{min_samples} enregistrements.")
+                return {'status': 'insufficient_data', 'available': total, 'required': min_samples}
+
+            features = DTCModelAI.ML_FEATURES
+            X, y = [], []
+            for record in qs.values(*features, 'has_anomaly'):
+                X.append([record.get(f) or 0.0 for f in features])
+                y.append(1 if record['has_anomaly'] else 0)
+
+            import numpy as np
+            X = np.array(X, dtype=float)
+            y = np.array(y)
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_scaled, y, test_size=0.2, random_state=42, stratify=y
+            )
+
+            clf = RandomForestClassifier(
+                n_estimators=200, max_depth=15, min_samples_split=5,
+                class_weight='balanced', random_state=42, n_jobs=-1,
+            )
+            clf.fit(X_train, y_train)
+
+            y_pred = clf.predict(X_test)
+            metrics = {
+                'accuracy':  round(float(accuracy_score(y_test, y_pred)), 4),
+                'precision': round(float(precision_score(y_test, y_pred, zero_division=0)), 4),
+                'recall':    round(float(recall_score(y_test, y_pred, zero_division=0)), 4),
+                'f1':        round(float(f1_score(y_test, y_pred, zero_division=0)), 4),
+            }
+            logger.info(f"[ML] Métriques entraînement: {metrics}")
+
+            model_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_models')
+            os.makedirs(model_dir, exist_ok=True)
+            scope = f"vehicle_{vehicle_id}" if vehicle_id else "global"
+
+            with open(os.path.join(model_dir, f"rf_{scope}.pkl"), 'wb') as f:
+                pickle.dump(clf, f)
+            with open(os.path.join(model_dir, f"scaler_{scope}.pkl"), 'wb') as f:
+                pickle.dump(scaler, f)
+
+            vehicle_obj = Vehicle.objects.get(pk=vehicle_id) if vehicle_id else None
+            ml_record = VehicleMLModel.objects.create(
+                scope='VEHICLE' if vehicle_id else 'GLOBAL',
+                vehicle=vehicle_obj,
+                algorithm='RandomForest',
+                accuracy=metrics['accuracy'],
+                precision=metrics['precision'],
+                recall=metrics['recall'],
+                f1_score=metrics['f1'],
+                training_samples=total,
+                is_active=metrics['f1'] >= 0.75,
+                version='1.0',
+            )
+
+            return {
+                'status': 'success',
+                'model_id': ml_record.id,
+                'metrics': metrics,
+                'training_samples': total,
+                'auto_activated': ml_record.is_active,
+            }
+
+        except Exception as e:
+            logger.error(f"[ML] Erreur entraînement: {e}")
+            return {'status': 'error', 'message': str(e)}
+
+    @staticmethod
+    def predict_with_ml(vehicle_id, pid_values):
+        """
+        Utilise le modèle ML entraîné pour prédire si les valeurs PID actuelles
+        indiquent une anomalie. Retourne None si aucun modèle actif disponible.
+        """
+        try:
+            import numpy as np
+            from api.models import VehicleMLModel
+        except ImportError:
+            return None
+
+        try:
+            ml_record = (
+                VehicleMLModel.objects.filter(vehicle_id=vehicle_id, is_active=True).order_by('-trained_at').first()
+                or VehicleMLModel.objects.filter(scope='GLOBAL', is_active=True).order_by('-trained_at').first()
+            )
+            if not ml_record:
+                return None
+
+            scope = f"vehicle_{vehicle_id}" if ml_record.scope == 'VEHICLE' else "global"
+            model_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_models')
+            model_path  = os.path.join(model_dir, f"rf_{scope}.pkl")
+            scaler_path = os.path.join(model_dir, f"scaler_{scope}.pkl")
+
+            if not os.path.exists(model_path):
+                return None
+
+            with open(model_path, 'rb') as f:
+                clf = pickle.load(f)
+            with open(scaler_path, 'rb') as f:
+                scaler = pickle.load(f)
+
+            features = DTCModelAI.ML_FEATURES
+            row = np.array([[pid_values.get(f) or 0.0 for f in features]], dtype=float)
+            row_scaled = scaler.transform(row)
+
+            proba = clf.predict_proba(row_scaled)[0]
+            anomaly_proba = float(proba[1]) if len(proba) > 1 else 0.0
+
+            if anomaly_proba < 0.6:
+                return None
+
+            return {
+                'type': 'ml_prediction',
+                'label': f'🤖 Modèle ML : Anomalie probable ({anomaly_proba*100:.0f}% de confiance)',
+                'severity': 'high' if anomaly_proba >= 0.8 else 'medium',
+                'certitude': int(anomaly_proba * 100),
+                'interpretation': (
+                    f"Le modèle Random Forest entraîné sur {ml_record.training_samples} sessions réelles "
+                    f"détecte une combinaison de paramètres anormale avec {anomaly_proba*100:.0f}% de confiance. "
+                    f"Métriques du modèle : F1={ml_record.f1_score:.2f}, Précision={ml_record.precision:.2f}."
+                ),
+                'actions': [
+                    "Lancer une analyse IA complète pour identifier la cause précise",
+                    "Comparer avec les sessions précédentes de ce véhicule",
+                ],
+                'model_version': ml_record.version,
+                'model_f1': ml_record.f1_score,
+            }
+
+        except Exception as e:
+            logger.warning(f"[ML] Erreur prédiction ML: {e}")
+            return None
 
     # ── BASE DE CONNAISSANCES DTC LOCALE (codes les plus fréquents) ──────────
     DTC_KNOWLEDGE_BASE = {
         'P0087': {
-            'meaning': "Pression carburant insuffisante dans le rail d'injection — le moteur ne reçoit pas assez de carburant.",
+            'meaning': "Pression de carburant trop basse dans le rail d'injection — le moteur n'a pas assez de force car le carburant n'arrive pas bien.",
             'web_causes': [
-                "Pompe à carburant défaillante ou en fin de vie",
-                "Filtre à carburant colmaté (obstruction)",
-                "Régulateur de pression carburant défectueux",
-                "Fuite sur la ligne d'alimentation carburant",
-                "Injecteurs encrassés augmentant la demande de pression",
+                "Pompe à carburant fatiguée ou gâtée",
+                "Filtre à carburant bouché (entretien négligé)",
+                "Régulateur de pression défectueux",
+                "Fuite sur le tuyau de carburant",
+                "Injecteurs encrassés qui boivent trop de pression",
             ],
             'web_solutions': [
-                "Mesurer la pression carburant au rail avec un manomètre (valeur nominale : 3-4 bar)",
-                "Remplacer le filtre à carburant (entretien recommandé tous les 30 000 km)",
-                "Tester la pompe à carburant (débit et pression à vide)",
-                "Inspecter les durites pour fuites ou pincements",
-                "Nettoyer ou remplacer les injecteurs si encrassés",
+                "Mesurer la pression avec un appareil (doit être entre 3 et 4 bar)",
+                "Changer le filtre à carburant (à faire tous les 30 000 km)",
+                "Contrôler la pompe à essence/gasoil",
+                "Bien regarder s'il n'y a pas une fuite sous la voiture",
+                "Nettoyer les injecteurs chez un expert",
             ],
         },
         'P0101': {
-            'meaning': "Débit massique d'air (MAF) hors plage — le capteur de masse d'air envoie des valeurs anormales.",
+            'meaning': "Le capteur de débit d'air (MAF) envoie des valeurs bizarres — l'ordinateur de bord ne sait plus comment doser l'air.",
             'web_causes': [
-                "Capteur MAF encrassé (huile, poussière)",
-                "Fuite d'air entre le MAF et le papillon des gaz",
-                "Filtre à air colmaté réduisant le débit",
-                "Câblage ou connecteur MAF endommagé",
-                "Capteur MAF défectueux",
+                "Capteur MAF sale (poussière ou huile)",
+                "Prise d'air entre le capteur et le moteur",
+                "Filtre à air très sale qui bloque l'entrée",
+                "Fiche ou fils du capteur abîmés",
+                "Capteur MAF gâté net",
             ],
             'web_solutions': [
-                "Nettoyer le capteur MAF avec un spray nettoyant spécifique (ne pas toucher le fil)",
-                "Inspecter les durites d'admission pour fissures ou déconnexions",
-                "Remplacer le filtre à air",
-                "Vérifier le câblage et le connecteur du MAF",
-                "Remplacer le capteur MAF si le nettoyage ne suffit pas",
+                "Nettoyer le capteur avec un spray spécial (ne pas toucher le fil interne)",
+                "Bien regarder les gros tuyaux d'air (chercher trou ou déchirure)",
+                "Changer le filtre à air",
+                "Contrôler la fiche et les fils du capteur",
+                "Changer le capteur si le nettoyage n'a rien donné",
             ],
         },
         'P0106': {
-            'meaning': "Pression du collecteur d'admission (MAP) hors plage — signal incohérent avec les autres paramètres moteur.",
+            'meaning': "Le capteur de pression (MAP) ne travaille pas bien — les informations de pression dans le moteur sont fausses.",
             'web_causes': [
-                "Capteur MAP défectueux ou encrassé",
-                "Fuite de dépression sur le collecteur d'admission",
-                "Durite de dépression percée ou déconnectée",
-                "Court-circuit dans le câblage du capteur MAP",
+                "Capteur MAP gâté ou très sale",
+                "Prise d'air (fuite) sur le moteur",
+                "Petit tuyau de dépression percé ou débranché",
+                "Fils du capteur qui se touchent (court-circuit)",
             ],
             'web_solutions': [
-                "Inspecter toutes les durites de dépression (collecteur, servo-frein, régulateur)",
-                "Tester le capteur MAP avec un multimètre (tension de sortie 0.5-4.5V)",
-                "Remplacer le capteur MAP si hors tolérance",
-                "Vérifier l'étanchéité du collecteur d'admission",
+                "Bien regarder tous les petits tuyaux d'air sur le moteur",
+                "Contrôler le voltage du capteur avec un appareil",
+                "Changer le capteur MAP s'il est gâté",
+                "Vérifier si le moteur ne siffle pas (signe de fuite d'air)",
             ],
         },
         'P0113': {
-            'meaning': "Température de l'air d'admission (IAT) trop élevée — l'air entrant dans le moteur est anormalement chaud.",
+            'meaning': "L'air qui entre dans le moteur est trop chaud — le capteur de température d'air (IAT) signale une chaleur anormale.",
             'web_causes': [
-                "Capteur IAT défectueux (valeur figée ou dérivée)",
-                "Filtre à air colmaté forçant l'aspiration d'air chaud",
-                "Intercooler défaillant (turbo) ne refroidissant plus l'air",
-                "Recirculation des gaz chauds du compartiment moteur",
+                "Capteur de température d'air gâté (valeur bloquée)",
+                "Filtre à air bouché qui aspire l'air chaud du moteur",
+                "Radiateur d'air (Intercooler) percé ou bouché sur moteur turbo",
+                "La chaleur du moteur entre directement dans l'admission",
             ],
             'web_solutions': [
-                "Remplacer le filtre à air",
-                "Vérifier et nettoyer l'intercooler (turbo)",
-                "Tester le capteur IAT (résistance variable selon température)",
-                "Améliorer la ventilation du compartiment moteur si nécessaire",
+                "Changer le filtre à air s'il est vieux",
+                "Nettoyer ou changer le radiateur d'air (si turbo)",
+                "Changer le petit capteur de température d'air",
+                "Vérifier que la boîte à air est bien fermée",
             ],
         },
         'P0122': {
-            'meaning': "Signal du capteur de position du papillon (TPS) trop bas — tension de sortie inférieure à la plage normale.",
+            'meaning': "Le capteur de position du papillon (TPS) ne donne pas assez de signal — l'ordinateur ne sait pas si tu accélères.",
             'web_causes': [
-                "Capteur TPS défectueux ou mal calibré",
-                "Court-circuit dans le câblage du TPS",
-                "Connecteur TPS oxydé ou desserré",
-                "Corps de papillon encrassé bloquant la rotation",
+                "Capteur TPS gâté ou mal réglé",
+                "Fils du capteur coupés ou en masse",
+                "Fiche du capteur rouillée ou mal branchée",
+                "Le clapet d'air (papillon) est trop sale et reste coincé",
             ],
             'web_solutions': [
-                "Nettoyer le corps de papillon avec un spray dégraissant",
-                "Vérifier la tension d'alimentation du TPS (5V référence)",
-                "Recalibrer le TPS selon la procédure constructeur",
-                "Remplacer le capteur TPS si hors tolérance",
+                "Nettoyer le corps de papillon avec un spray",
+                "Vérifier si le courant arrive bien au capteur (5V)",
+                "Régler le capteur si c'est possible sur ce modèle",
+                "Changer le capteur TPS s'il est gâté",
             ],
         },
         'P0190': {
-            'meaning': "Capteur de pression du rail carburant — circuit défaillant ou signal hors plage.",
+            'meaning': "Le capteur de pression de la rampe à injection a un souci — le signal est faux ou absent.",
             'web_causes': [
-                "Capteur de pression rail défectueux",
-                "Pression carburant réellement insuffisante",
-                "Câblage endommagé ou connecteur oxydé",
-                "Pompe haute pression défaillante (moteur diesel)",
+                "Capteur de pression de rampe gâté",
+                "La pompe haute pression ne donne pas assez de force",
+                "Fils abîmés ou fiche rouillée sur le capteur",
+                "Grosse fuite de carburant sur le circuit haute pression",
             ],
             'web_solutions': [
-                "Mesurer la pression réelle du rail avec un manomètre externe",
-                "Vérifier le câblage et le connecteur du capteur",
-                "Remplacer le capteur de pression rail",
-                "Contrôler la pompe haute pression (diesel)",
+                "Mesurer la pression réelle avec un appareil de garage",
+                "Contrôler les fils et la fiche du capteur",
+                "Changer le capteur de pression de rampe",
+                "Contrôler la pompe haute pression (surtout sur Diesel)",
             ],
         },
         'P0217': {
-            'meaning': "Température du liquide de refroidissement moteur trop élevée — risque de surchauffe imminente.",
+            'meaning': "Le moteur chauffe trop (surchauffe) — attention, risque de casser le moteur rapidement !",
             'web_causes': [
-                "Niveau de liquide de refroidissement insuffisant (fuite ou évaporation)",
-                "Thermostat bloqué en position fermée",
-                "Ventilateur de refroidissement défaillant (électrique ou embrayage)",
-                "Radiateur obstrué (calcaire, insectes, déformation)",
-                "Pompe à eau défectueuse (débit insuffisant)",
-                "Joint de culasse percé (mélange eau/huile)",
+                "Pas assez d'eau dans le radiateur (fuite)",
+                "Le thermostat est bloqué et l'eau ne circule plus",
+                "Le ventilateur ne tourne pas (moteur de ventilo gâté)",
+                "Radiateur bouché par la saleté ou le calcaire",
+                "Pompe à eau gâtée (l'eau ne bouge plus)",
+                "Joint de culasse gâté (mélange eau et huile)",
             ],
             'web_solutions': [
-                "Vérifier immédiatement le niveau de liquide de refroidissement (moteur froid)",
-                "Tester le thermostat (ouverture à 87-92°C dans l'eau chaude)",
-                "Vérifier le fonctionnement du ventilateur (démarrage automatique à chaud)",
-                "Nettoyer le radiateur extérieurement (jet d'eau doux)",
-                "Contrôler la pompe à eau (jeu axial, fuite sur joint)",
-                "Faire un test de combustion dans le liquide de refroidissement (joint de culasse)",
+                "Vérifier le niveau d'eau (ATTENTION : seulement moteur froid !)",
+                "Tester si le thermostat s'ouvre bien",
+                "Vérifier si le ventilateur se déclenche quand le moteur est chaud",
+                "Nettoyer le radiateur au jet d'eau",
+                "Changer la pompe à eau si elle fait du bruit ou fuit",
             ],
         },
         'P0218': {
@@ -1023,72 +1988,68 @@ class DTCModelAI:
             ],
         },
         'P0300': {
-            'meaning': "Ratés d'allumage aléatoires détectés sur plusieurs cylindres — combustion irrégulière.",
+            'meaning': "Ratés d'allumage aléatoires détectés sur plusieurs cylindres — le moteur tremble car la combustion ne se fait pas bien.",
             'web_causes': [
-                "Bougies d'allumage usées ou encrassées",
-                "Bobines d'allumage défaillantes",
-                "Injecteurs encrassés ou défectueux",
-                "Fuite de compression sur un ou plusieurs cylindres",
-                "Problème d'alimentation carburant (pression basse)",
-                "Capteur de position vilebrequin (CKP) défaillant",
+                "Bougies d'allumage très fatiguées ou gâtées",
+                "Bobines d'allumage qui donnent un courant faible",
+                "Injecteurs encrassés ou gâtés",
+                "Le moteur n'a plus assez de compression",
+                "Pression de carburant trop basse",
+                "Fils ou fiche du capteur de vilebrequin abîmés",
             ],
             'web_solutions': [
-                "Remplacer les bougies d'allumage (entretien tous les 30-60 000 km)",
-                "Tester les bobines d'allumage (résistance primaire/secondaire)",
-                "Nettoyer ou remplacer les injecteurs",
-                "Faire un test de compression sur tous les cylindres",
-                "Vérifier la pression carburant",
+                "Changer les bougies d'allumage (entretien tous les 30 000 km)",
+                "Tester les bobines d'allumage",
+                "Nettoyer ou changer les injecteurs",
+                "Mesurer la compression des cylindres chez un expert",
+                "Vérifier la pression de la pompe à essence",
             ],
         },
         'P0500': {
-            'meaning': "Capteur de vitesse véhicule (VSS) — signal absent ou hors plage.",
+            'meaning': "Le capteur de vitesse du véhicule ne travaille pas bien — le compteur de vitesse peut rester à zéro.",
             'web_causes': [
-                "Capteur VSS défectueux ou endommagé",
-                "Câblage coupé ou connecteur oxydé",
-                "Roue phonique endommagée (dents manquantes)",
-                "Problème de boîte de vitesses",
+                "Capteur de vitesse gâté net",
+                "Fils coupés ou fiche rouillée sur le capteur",
+                "Petit engrenage dans la boîte de vitesses cassé",
+                "Fils qui se touchent entre le capteur et le tableau de bord",
             ],
             'web_solutions': [
-                "Inspecter le capteur VSS et son câblage",
-                "Nettoyer la roue phonique",
-                "Remplacer le capteur VSS",
-                "Vérifier la boîte de vitesses",
+                "Bien regarder si les fils du capteur de vitesse ne sont pas coupés",
+                "Changer le capteur de vitesse s'il est gâté",
+                "Contrôler les dents du pignon dans la boîte",
+                "Vérifier si le compteur de vitesse réagit sur un appareil de diagnostic",
             ],
         },
         'P0524': {
-            'meaning': "Pression d'huile moteur trop basse — risque de destruction des coussinets et du vilebrequin.",
+            'meaning': "La pression d'huile moteur est trop basse — danger, le moteur peut casser si tu roules !",
             'web_causes': [
-                "Niveau d'huile insuffisant (fuite ou consommation)",
-                "Pompe à huile défaillante (usure, cavitation)",
-                "Huile trop dégradée (viscosité insuffisante)",
-                "Clapet de décharge de la pompe bloqué ouvert",
-                "Coussinets de vilebrequin usés (jeu excessif)",
-                "Capteur de pression d'huile défectueux",
+                "Pas assez d'huile dans le moteur (fuite ou moteur qui boit l'huile)",
+                "Pompe à huile fatiguée ou gâtée",
+                "Huile trop vieille ou trop fluide (perte de force)",
+                "Le capteur de pression d'huile est gâté et ment",
+                "Coussinets de vilebrequin usés (trop de jeu)",
             ],
             'web_solutions': [
-                "Arrêter le moteur immédiatement et vérifier le niveau d'huile",
-                "Effectuer une vidange si l'huile est dégradée",
-                "Mesurer la pression d'huile avec un manomètre mécanique",
-                "Remplacer la pompe à huile si débit insuffisant",
-                "Inspecter les coussinets de vilebrequin",
+                "Arrêter le moteur direct et vérifier le niveau d'huile",
+                "Faire la vidange avec une bonne huile si c'est trop vieux",
+                "Mesurer la pression réelle avec un manomètre",
+                "Changer la pompe à huile si elle ne pousse plus",
+                "Changer le capteur de pression d'huile",
             ],
         },
         'P0562': {
-            'meaning': "Tension du système électrique trop basse — la batterie ou l'alternateur ne fournit pas assez de tension.",
+            'meaning': "La tension (voltage) du système est trop basse — la batterie ou l'alternateur ont un souci.",
             'web_causes': [
-                "Batterie en fin de vie (capacité réduite)",
-                "Alternateur défaillant (charge insuffisante)",
-                "Connexions de batterie oxydées ou desserrées",
-                "Consommateur parasite déchargeant la batterie",
-                "Courroie d'alternateur détendue ou cassée",
+                "Batterie faible ou très vieille",
+                "L'alternateur ne charge pas assez",
+                "Fils de batterie (cosses) sales ou mal serrés",
+                "Consommation de courant anormale même moteur éteint",
             ],
             'web_solutions': [
-                "Tester la batterie avec un testeur de charge (capacité réelle)",
-                "Mesurer la tension de charge de l'alternateur (13.8-14.8V moteur tournant)",
-                "Nettoyer et serrer les bornes de batterie",
-                "Rechercher une consommation parasite (test ampèremètre sur borne négative)",
-                "Vérifier la tension et l'état de la courroie d'alternateur",
-                "Remplacer la batterie si > 4-5 ans ou capacité < 70%",
+                "Nettoyer et bien serrer les deux bornes de la batterie",
+                "Mesurer le voltage moteur tournant (doit être entre 13.8V et 14.5V)",
+                "Changer la batterie si elle ne tient plus la charge",
+                "Faire réviser l'alternateur chez un électricien auto",
             ],
         },
         'P0563': {
@@ -1173,71 +2134,68 @@ class DTCModelAI:
             ],
         },
         'P0171': {
-            'meaning': "Mélange air/carburant trop pauvre (banc 1) — le moteur reçoit trop d'air ou pas assez de carburant.",
+            'meaning': "Le mélange air/carburant est trop pauvre — le moteur reçoit trop d'air ou pas assez de carburant.",
             'web_causes': [
-                "Fuite d'air après le débitmètre MAF (durite fissurée, joint collecteur)",
-                "Capteur MAF encrassé donnant une valeur trop basse",
-                "Injecteurs encrassés délivrant moins de carburant",
-                "Pompe à carburant en fin de vie (pression insuffisante)",
-                "Sonde lambda défectueuse (signal figé en pauvre)",
-                "Filtre à carburant colmaté",
+                "Fuite d'air après le capteur (tuyau d'air percé ou débranché)",
+                "Capteur de débit d'air (MAF) sale ou gâté",
+                "Injecteurs bouchés qui ne donnent pas assez d'essence",
+                "Pompe à carburant fatiguée qui ne pousse pas fort",
+                "Filtre à carburant bouché",
+                "La sonde lambda amont est gâtée",
             ],
             'web_solutions': [
-                "Inspecter toutes les durites d'admission pour fuites (spray carburant ou fumée)",
-                "Nettoyer le capteur MAF avec un spray spécifique",
-                "Vérifier la pression carburant au rail",
-                "Nettoyer les injecteurs (additif ou nettoyage ultrason)",
-                "Remplacer le filtre à carburant",
-                "Tester la sonde lambda amont",
+                "Bien chercher un sifflement ou un trou sur les tuyaux d'air",
+                "Nettoyer le capteur de débit d'air (MAF)",
+                "Changer le filtre à carburant",
+                "Tester la pression de la pompe à essence",
+                "Nettoyer les injecteurs",
+                "Contrôler la sonde lambda",
             ],
         },
         'P0172': {
-            'meaning': "Mélange air/carburant trop riche (banc 1) — le moteur reçoit trop de carburant ou pas assez d'air.",
+            'meaning': "Le mélange air/carburant est trop riche — le moteur reçoit trop de carburant ou pas assez d'air.",
             'web_causes': [
-                "Injecteurs qui fuient ou restent ouverts",
-                "Capteur MAF défectueux (valeur surestimée)",
-                "Régulateur de pression carburant bloqué (pression trop haute)",
-                "Sonde lambda défectueuse (signal figé en riche)",
-                "Filtre à air colmaté réduisant l'air entrant",
+                "Injecteur qui fuit ou reste ouvert (il pisse l'essence)",
+                "Capteur de débit d'air (MAF) qui ment (donne trop de valeur)",
+                "Régulateur de pression de carburant gâté (pression trop haute)",
+                "Filtre à air très sale qui étouffe le moteur",
+                "Sonde lambda gâtée",
             ],
             'web_solutions': [
-                "Tester les injecteurs (fuite statique moteur éteint)",
-                "Nettoyer ou remplacer le capteur MAF",
-                "Vérifier le régulateur de pression carburant",
-                "Remplacer le filtre à air",
-                "Tester la sonde lambda amont",
+                "Changer le filtre à air s'il est très noir",
+                "Nettoyer ou changer les injecteurs qui fuient",
+                "Contrôler la pression de carburant",
+                "Tester le capteur de débit d'air",
             ],
         },
         'P0340': {
-            'meaning': "Signal du capteur de position d'arbre à cames (CMP) absent ou incorrect — le calculateur ne peut pas synchroniser l'allumage et l'injection.",
+            'meaning': "Le capteur de position d'arbre à cames (sensor) ne travaille pas — l'ordinateur de bord est perdu et ne sait pas quand envoyer l'étincelle.",
             'web_causes': [
-                "Capteur CMP défectueux ou endommagé",
-                "Roue phonique de l'arbre à cames endommagée (dents manquantes)",
-                "Câblage coupé ou connecteur oxydé",
-                "Problème de calage de distribution (chaîne sautée)",
-                "Court-circuit dans le circuit du capteur",
+                "Capteur d'arbre à cames gâté net",
+                "Fils coupés ou fiche rouillée sur le capteur",
+                "La chaîne ou courroie de distribution a sauté une dent",
+                "Fils qui se touchent (court-circuit) sur le capteur",
             ],
             'web_solutions': [
-                "Vérifier le câblage et le connecteur du capteur CMP",
-                "Mesurer la résistance du capteur CMP (valeur nominale selon constructeur)",
-                "Inspecter la roue phonique de l'arbre à cames",
-                "Contrôler le calage de distribution",
-                "Remplacer le capteur CMP si défectueux",
+                "Changer le capteur d'arbre à cames",
+                "Bien contrôler si les fils ne sont pas coupés ou brûlés",
+                "Vérifier le calage de la distribution",
+                "Nettoyer la fiche du capteur",
             ],
         },
         'P0335': {
-            'meaning': "Signal du capteur de position du vilebrequin (CKP) absent ou incorrect — le moteur ne peut pas démarrer ou cale.",
+            'meaning': "Le capteur de régime moteur (vilebrequin) ne donne pas de signal — la voiture peut refuser de démarrer ou s'éteindre net.",
             'web_causes': [
-                "Capteur CKP défectueux",
-                "Roue phonique du vilebrequin endommagée",
-                "Câblage coupé ou connecteur oxydé",
-                "Jeu excessif entre le capteur et la roue phonique",
+                "Capteur de vilebrequin gâté ou sale",
+                "Cible métallique sur le moteur abîmée (roue phonique)",
+                "Fils coupés ou brûlés par la chaleur du moteur",
+                "Le capteur est trop loin de sa cible",
             ],
             'web_solutions': [
-                "Vérifier le câblage et le connecteur du capteur CKP",
-                "Contrôler le jeu entre le capteur et la roue phonique (0.5–1.5 mm)",
-                "Inspecter la roue phonique (dents manquantes ou déformées)",
-                "Remplacer le capteur CKP",
+                "Changer le capteur de vilebrequin",
+                "Contrôler le faisceau électrique (les fils) vers le capteur",
+                "Nettoyer la fiche avec un spray contact",
+                "Vérifier si le capteur est bien serré à sa place",
             ],
         },
         'P0401': {
@@ -1271,96 +2229,89 @@ class DTCModelAI:
             ],
         },
         'U0100': {
-            'meaning': "Perte de communication avec le calculateur moteur (ECM/PCM) — le réseau CAN ne reçoit plus les données du calculateur principal.",
+            'meaning': "L'ordinateur de bord (calculateur) ne répond plus — le réseau de communication de la voiture est coupé ou en panne.",
             'web_causes': [
-                "Calculateur moteur (ECM) défaillant ou en court-circuit",
-                "Câblage du bus CAN endommagé (coupure, court-circuit)",
-                "Connecteur du calculateur oxydé ou desserré",
-                "Problème d'alimentation ou de masse du calculateur",
-                "Fusible ou relais du calculateur grillé",
+                "Ordinateur du moteur (ECM) gâté ou n'a plus de courant",
+                "Fils de communication (Bus CAN) coupés ou en masse",
+                "Fiche de l'ordinateur rouillée ou mal branchée",
+                "Fusible ou relais de l'ordinateur grillé",
             ],
             'web_solutions': [
-                "Vérifier l'alimentation et les masses du calculateur moteur",
-                "Inspecter le connecteur du calculateur (oxydation, broches pliées)",
-                "Contrôler les fusibles et relais associés au calculateur",
-                "Vérifier la continuité du bus CAN (résistance terminale : 60 Ω entre CAN-H et CAN-L)",
-                "Remplacer le calculateur moteur si défaillant (opération spécialisée)",
+                "Contrôler tous les fusibles de la voiture",
+                "Vérifier si les fiches de l'ordinateur sont bien fixées",
+                "Mesurer la batterie (doit être bien chargée)",
+                "Chercher s'il n'y a pas un fils coupé quelque part",
             ],
         },
         'P0128': {
-            'meaning': "Température du liquide de refroidissement trop basse — le moteur n'atteint pas sa température de fonctionnement normale.",
+            'meaning': "Le moteur reste trop froid — l'eau ne chauffe pas assez vite ou le capteur se trompe.",
             'web_causes': [
-                "Thermostat bloqué en position ouverte (reste ouvert en permanence)",
-                "Capteur de température de liquide de refroidissement défectueux",
-                "Trajet trop court ne permettant pas la montée en température",
+                "Le thermostat est bloqué ouvert (l'eau circule trop)",
+                "Capteur de température d'eau gâté",
+                "Le ventilateur tourne tout le temps même moteur froid",
             ],
             'web_solutions': [
-                "Remplacer le thermostat (pièce peu coûteuse, entretien préventif recommandé)",
-                "Vérifier le capteur de température (valeur cohérente avec la température réelle)",
-                "Effectuer un trajet plus long pour confirmer le diagnostic",
+                "Changer le thermostat (c'est souvent lui qui reste ouvert)",
+                "Contrôler le capteur de température",
+                "Vérifier si le ventilateur ne tourne pas en permanence",
             ],
         },
         'P0016': {
-            'meaning': "Désynchronisation entre la position du vilebrequin et de l'arbre à cames (banc 1) — problème de calage de distribution.",
+            'meaning': "Le moteur est décalé — le haut et le bas du moteur ne tournent plus ensemble (problème de distribution).",
             'web_causes': [
-                "Chaîne de distribution étirée ou sautée d'une dent",
-                "Tendeur de chaîne défaillant (usure, manque d'huile)",
-                "Phaseur d'arbre à cames (VVT) défaillant ou encrassé",
-                "Huile moteur dégradée ou niveau insuffisant affectant le VVT",
-                "Capteur CKP ou CMP défectueux",
+                "Chaîne ou courroie de distribution qui a sauté ou s'est allongée",
+                "Tendeur de chaîne fatigué ou manque de pression d'huile",
+                "Électrovanne VVT sale ou gâtée",
+                "Huile trop vieille qui bloque le système de calage",
             ],
             'web_solutions': [
-                "Vérifier le niveau et la qualité de l'huile moteur (changer si dégradée)",
-                "Inspecter le phaseur VVT (nettoyage ou remplacement)",
-                "Contrôler le tendeur de chaîne de distribution",
-                "Remplacer la chaîne de distribution si étirée (intervention majeure)",
-                "Vérifier les capteurs CKP et CMP",
+                "Vérifier le calage de la distribution direct",
+                "Faire la vidange avec une bonne huile",
+                "Contrôler le tendeur de chaîne",
+                "Changer le capteur d'arbre à cames ou de vilebrequin",
             ],
         },
         'P0157': {
-            'meaning': "Tension basse du circuit du capteur d'oxygène (Banque 2, Capteur 2) — mélange trop pauvre ou capteur défectueux.",
+            'meaning': "Le capteur d'oxygène (sonde lambda) signale un mélange trop pauvre — il y a trop d'air ou la sonde est gâtée.",
             'web_causes': [
-                "Fuite d'air à l'admission ou à l'échappement",
-                "Capteur d'oxygène (O2) défaillant (sonde aval)",
-                "Pression de carburant insuffisante",
-                "Injecteur de carburant encrassé ou défectueux",
-                "Câblage de la sonde O2 endommagé ou court-circuité",
+                "Fuite d'air sur le moteur ou l'échappement",
+                "Sonde lambda (capteur d'oxygène) gâtée",
+                "La pompe à essence ne pousse pas assez",
+                "Injecteur bouché ou sale",
+                "Fils de la sonde coupés ou brûlés",
             ],
             'web_solutions': [
-                "Vérifier la pression de carburant (doit être autour de 40-50 psi)",
-                "Inspecter l'échappement pour détecter des fuites d'air",
-                "Contrôler le câblage et les connecteurs de la sonde O2",
-                "Remplacer la sonde O2 Banque 2 Capteur 2",
-                "Nettoyer les injecteurs de carburant",
+                "Bien regarder s'il n'y a pas un sifflement (fuite d'air)",
+                "Contrôler les fils et la fiche de la sonde",
+                "Changer la sonde lambda si elle ne réagit plus",
+                "Nettoyer les injecteurs",
             ],
             'web_symptoms': [
                 "Voyant moteur allumé (MIL)",
-                "Diminution de la puissance moteur",
-                "Ralenti instable ou calages fréquents",
-                "Surconsommation de carburant",
+                "Perte de force du moteur",
+                "Le moteur tremble ou s'éteint",
+                "La voiture boit trop de carburant",
             ],
             'web_severity': 'medium',
         },
         'P0274': {
-            'meaning': "Circuit de l'injecteur du cylindre 5 trop élevé — problème électrique sur la commande de l'injecteur.",
+            'meaning': "Problème sur l'injecteur du cylindre numéro 5 — le courant ne passe pas bien dans l'injecteur.",
             'web_causes': [
-                "Injecteur de carburant du cylindre 5 défaillant (court-circuit)",
-                "Câblage de l'injecteur endommagé ou corrodé",
-                "Connecteur de l'injecteur desserré ou broches pliées",
-                "Calculateur moteur (PCM/ECM) défectueux",
+                "Injecteur numéro 5 gâté (court-circuit)",
+                "Fils de l'injecteur coupés ou rouillés",
+                "Fiche de l'injecteur mal branchée",
+                "Petit souci dans l'ordinateur de bord",
             ],
             'web_solutions': [
-                "Nettoyer l'injecteur et ses connecteurs",
-                "Vérifier la résistance de l'injecteur (doit être conforme aux spécifications)",
-                "Contrôler la continuité du faisceau électrique jusqu'au calculateur",
-                "Remplacer l'injecteur du cylindre 5",
-                "Vérifier les mises à jour du logiciel PCM",
+                "Nettoyer l'injecteur et sa fiche",
+                "Vérifier si le courant arrive bien à l'injecteur",
+                "Changer l'injecteur numéro 5",
             ],
             'web_symptoms': [
-                "Moteur qui tourne sur moins de cylindres (ratés)",
-                "Diminution de la puissance et de l'accélération",
-                "Consommation de carburant en hausse",
-                "Voyant moteur qui clignote (danger pour le catalyseur)",
+                "Moteur qui boite (tourne sur 3 pattes)",
+                "Perte de force et de vitesse",
+                "Consommation en hausse",
+                "Voyant moteur qui clignote (danger)",
             ],
             'web_severity': 'high',
         },
@@ -1396,21 +2347,34 @@ class DTCModelAI:
                 if m:
                     meaning = re.sub(r'\s+', ' ', m.group(1)).strip()
 
-                causes_sec = re.search(
-                    r'(?:possible causes?)[^<]*</[^>]+>(.*?)</(?:ul|ol)>',
-                    html, re.IGNORECASE | re.DOTALL)
-                if causes_sec:
-                    causes = [re.sub(r'<[^>]+>', '', i).strip()
-                              for i in re.findall(r'<li[^>]*>(.*?)</li>', causes_sec.group(1), re.DOTALL)
-                              if len(i.strip()) > 5][:6]
+                # Extraction robuste des causes
+                causes_patterns = [
+                    r'(?:possible causes?|causes include)[^<]*</[^>]+>(.*?)</(?:ul|ol)>',
+                    r'<b>Causes</b><br />(.*?)(?:<b>|$)',
+                    r'Potential causes for this fault code include:(.*?)(?:<ul>|<li>|$)',
+                ]
+                for p in causes_patterns:
+                    causes_sec = re.search(p, html, re.IGNORECASE | re.DOTALL)
+                    if causes_sec:
+                        causes = [re.sub(r'<[^>]+>', '', i).strip()
+                                  for i in re.findall(r'<li[^>]*>(.*?)</li>|([^<>\r\n]{15,150})', causes_sec.group(1), re.DOTALL)
+                                  if (i[0] or i[1]).strip() and len((i[0] or i[1]).strip()) > 5][:6]
+                        causes = [c.strip() for c in causes if c.strip()]
+                        if causes: break
 
-                fixes_sec = re.search(
-                    r'(?:possible fixes?|repairs?)[^<]*</[^>]+>(.*?)</(?:ul|ol)>',
-                    html, re.IGNORECASE | re.DOTALL)
-                if fixes_sec:
-                    solutions = [re.sub(r'<[^>]+>', '', i).strip()
-                                 for i in re.findall(r'<li[^>]*>(.*?)</li>', fixes_sec.group(1), re.DOTALL)
-                                 if len(i.strip()) > 5][:6]
+                # Extraction robuste des solutions
+                fixes_patterns = [
+                    r'(?:possible fixes?|repairs?|common repairs?)[^<]*</[^>]+>(.*?)</(?:ul|ol)>',
+                    r'<b>Possible Solutions</b><br />(.*?)(?:<b>|$)',
+                ]
+                for p in fixes_patterns:
+                    fixes_sec = re.search(p, html, re.IGNORECASE | re.DOTALL)
+                    if fixes_sec:
+                        solutions = [re.sub(r'<[^>]+>', '', i).strip()
+                                     for i in re.findall(r'<li[^>]*>(.*?)</li>|([^<>\r\n]{15,150})', fixes_sec.group(1), re.DOTALL)
+                                     if (i[0] or i[1]).strip() and len((i[0] or i[1]).strip()) > 5][:6]
+                        solutions = [s.strip() for s in solutions if s.strip()]
+                        if solutions: break
 
                 if meaning or causes:
                     logger.info(f"[DTC Web] {code} trouvé sur obd-codes.com")
@@ -1423,4 +2387,6 @@ class DTCModelAI:
         except Exception as e:
             logger.debug(f"[DTC Web] {code} non accessible sur obd-codes.com: {e}")
 
+        # ── Source 3 : Backup via un autre service ou logique de type ─────────────
+        # Si rien n'a été trouvé, on peut tenter une recherche plus générique
         return None

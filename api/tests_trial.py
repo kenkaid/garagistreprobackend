@@ -99,3 +99,25 @@ class TrialIntegrationTestCase(TestCase):
         # Par défaut l'essai est de 14 jours
         self.assertEqual(data['trial_days_remaining'], 14)
         self.assertEqual(data['subscription_tier'], 'TRIAL')
+
+    def test_trial_features_are_all_unlocked(self):
+        """
+        Vérifie que toutes les fonctionnalités actives sont débloquées pendant la période d'essai.
+        """
+        from api.models import Feature
+        Feature.objects.create(name="Feature 1", code="f1", is_active=True)
+        Feature.objects.create(name="Feature 2", code="f2", is_active=True)
+        Feature.objects.create(name="Feature Inactive", code="f3", is_active=False)
+
+        user = User.objects.create_user(username="test_features", password="password123", user_type="INDIVIDUAL")
+        from api.services.subscriptions import SubscriptionService
+        SubscriptionService.activate_trial(user)
+
+        from api.serializers import UserSerializer
+        serializer = UserSerializer(user)
+        features = serializer.data['features']
+
+        self.assertIn('f1', features)
+        self.assertIn('f2', features)
+        self.assertNotIn('f3', features)
+        self.assertEqual(len(features), 2)
