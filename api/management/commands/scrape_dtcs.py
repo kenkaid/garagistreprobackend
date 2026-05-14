@@ -61,7 +61,7 @@ SEVERITY_KEYWORDS = {
 }
 
 
-def detect_severity(description: str) -> str:
+def detect_severity(description):
     """Détecte la sévérité d'un code DTC à partir de sa description."""
     desc_lower = description.lower()
     for severity, keywords in SEVERITY_KEYWORDS.items():
@@ -71,7 +71,7 @@ def detect_severity(description: str) -> str:
     return "medium"
 
 
-def clean_description(raw: str) -> str:
+def clean_description(raw):
     """Nettoie la description en supprimant les liens Markdown et espaces superflus."""
     # Supprime les liens Markdown [texte](/url) → texte
     cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', raw)
@@ -80,7 +80,7 @@ def clean_description(raw: str) -> str:
     return cleaned.strip()
 
 
-def parse_dtc_table(content: str) -> list:
+def parse_dtc_table(content):
     """
     Parse le HTML d'une page outilsobdfacile.fr et extrait les paires (code, description).
     Format HTML : <tr><td>P0300</td><td>Description...</td></tr>
@@ -100,7 +100,7 @@ def parse_dtc_table(content: str) -> list:
     return results
 
 
-def fetch_page(url: str, verbose: bool = False) -> str:
+def fetch_page(url, verbose=False):
     """Récupère le contenu d'une page web."""
     headers = {
         "User-Agent": (
@@ -237,12 +237,12 @@ class Command(BaseCommand):
 
     def _save_dtc(
         self,
-        code: str,
-        description: str,
-        brand: str | None,
-        dry_run: bool,
-        verbose: bool,
-    ) -> tuple[int, int, int]:
+        code,
+        description,
+        brand=None,
+        dry_run=False,
+        verbose=False,
+    ):
         """
         Sauvegarde un code DTC en base.
         Retourne (created, updated, skipped).

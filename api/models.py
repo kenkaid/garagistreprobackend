@@ -157,7 +157,7 @@ class Review(models.Model):
         ordering = ['-created_at']
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(scan_session__isnull=False) | models.Q(appointment__isnull=False),
+                check=models.Q(scan_session__isnull=False) | models.Q(appointment__isnull=False),
                 name='review_must_have_intervention'
             )
         ]

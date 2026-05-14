@@ -12,6 +12,6 @@ class Migration(migrations.Migration):
     operations = [
         migrations.AddConstraint(
             model_name='review',
-            constraint=models.CheckConstraint(condition=models.Q(('scan_session__isnull', False), ('appointment__isnull', False), _connector='OR'), name='review_must_have_intervention'),
+            constraint=models.CheckConstraint(check=models.Q(('scan_session__isnull', False), ('appointment__isnull', False), _connector='OR'), name='review_must_have_intervention'),
         ),
     ]
