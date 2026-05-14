@@ -13,9 +13,16 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 
+# Configuration pour charger les variables d'environnement depuis un fichier .env si présent
+try:
+    from decouple import config
+except ImportError:
+    # Fallback si python-decouple n'est pas installé
+    def config(name, default=None):
+        return os.environ.get(name, default)
+
 # Configuration dynamique de l'IP pour la production
-# On essaie de récupérer l'IP via une variable d'environnement ou on utilise l'IP locale par défaut
-SERVER_IP = os.getenv('SERVER_IP', '38.242.198.246')
+SERVER_IP = config('SERVER_IP', default='38.242.198.246')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,12 +32,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-n9l$i5gyxl6irsls6&gi%-_#7)==7endagzdnh-156bm2-h_ve'
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-n9l$i5gyxl6irsls6&gi%-_#7)==7endagzdnh-156bm2-h_ve')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = [SERVER_IP, 'localhost', '127.0.0.1', '10.0.2.2', 'obdciauto.com', 'www.obdciauto.com']
+# Hôtes autorisés
+ALLOWED_HOSTS_RAW = config('ALLOWED_HOSTS', default='')
+if ALLOWED_HOSTS_RAW:
+    ALLOWED_HOSTS = ALLOWED_HOSTS_RAW.split(',')
+else:
+    ALLOWED_HOSTS = [SERVER_IP, 'localhost', '127.0.0.1', '10.0.2.2', 'obdciauto.com', 'www.obdciauto.com']
 
 CSRF_TRUSTED_ORIGINS = ['https://obdciauto.com', 'https://www.obdciauto.com']
 
@@ -91,11 +103,11 @@ WSGI_APPLICATION = 'core.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'obdci_connect',
-        'USER': 'root',
-        'PASSWORD': 'regexREGEX',
-        'HOST': '127.0.0.1',
-        'PORT': '3306',
+        'NAME': config('DB_NAME', default='alpha_obdci'),
+        'USER': config('DB_USER', default='alpha_mobile'),
+        'PASSWORD': config('DB_PASSWORD', default=''),
+        'HOST': config('DB_HOST', default='127.0.0.1'),
+        'PORT': config('DB_PORT', default='3306'),
         'OPTIONS': {
             'charset': 'utf8mb4',
         },
