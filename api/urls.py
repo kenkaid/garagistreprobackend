@@ -44,5 +44,6 @@ urlpatterns = [
     path('payments/wave/webhook/', WaveWebhookView.as_view(), name='wave-webhook'),
     path('settings/', GlobalSettingsView.as_view(), name='global-settings'),
     path('app-config/', AppConfigView.as_view(), name='app-config'),
+    path('auth-token/', views.obtain_auth_token, name='api_token_auth_internal'),
     path('', include(router.urls)),
 ]

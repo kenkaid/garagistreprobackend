@@ -184,16 +184,33 @@ class MechanicViewSet(viewsets.ModelViewSet):
         # MAIS ici on veut permettre de voir les mécaniciens experts sur la carte sans login.
         return Mechanic.objects.filter(is_expert=True, is_active=True)
 
-    @action(detail=False, methods=['get', 'patch', 'put'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get', 'patch', 'put'])
     def current(self, request):
         """
         Récupère ou met à jour le profil complet de l'utilisateur connecté.
         S'adapte selon le type d'utilisateur (MECHANIC ou FLEET_OWNER).
         """
-        if not request.user.is_authenticated:
-            return Response({"error": "Authentification requise pour accéder au profil actuel.", "detail": "identifiant incorrect"}, status=status.HTTP_401_UNAUTHORIZED)
-
         user = request.user
+        
+        # Log pour débogage sur le VPS
+        print(f"DEBUG: Current user auth status: {user.is_authenticated}")
+        auth_header = request.headers.get('Authorization')
+        print(f"DEBUG: Authorization header: {auth_header}")
+
+        if not user.is_authenticated:
+            # Essayer de récupérer via le token manuellement si le middleware a échoué
+            if auth_header and auth_header.startswith('Token '):
+                token_key = auth_header.split(' ')[1]
+                try:
+                    from rest_framework.authtoken.models import Token
+                    token = Token.objects.get(key=token_key)
+                    user = token.user
+                    print(f"DEBUG: User recovered from token: {user.username}")
+                except Exception as e:
+                    print(f"DEBUG: Token recovery failed: {str(e)}")
+                    return Response({"error": "Authentification requise.", "detail": "Token invalide"}, status=status.HTTP_401_UNAUTHORIZED)
+            else:
+                return Response({"error": "Authentification requise pour accéder au profil actuel.", "detail": "identifiant incorrect"}, status=status.HTTP_401_UNAUTHORIZED)
 
         # Cas spécial pour les mécaniciens qui ont un profil étendu
         if user.user_type == 'MECHANIC':
