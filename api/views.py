@@ -202,7 +202,6 @@ class MechanicViewSet(viewsets.ModelViewSet):
             if auth_header and auth_header.startswith('Token '):
                 token_key = auth_header.split(' ')[1]
                 try:
-                    from rest_framework.authtoken.models import Token
                     token = Token.objects.get(key=token_key)
                     user = token.user
                     print(f"DEBUG: User recovered from token: {user.username}")

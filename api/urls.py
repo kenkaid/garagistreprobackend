@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from rest_framework.authtoken import views as auth_views
 from api.views import (
     MechanicViewSet, VehicleViewSet, ScanSessionViewSet,
     SubscriptionPlanViewSet, SubscriptionViewSet, RegisterView, AdminDashboardView,
@@ -44,6 +45,6 @@ urlpatterns = [
     path('payments/wave/webhook/', WaveWebhookView.as_view(), name='wave-webhook'),
     path('settings/', GlobalSettingsView.as_view(), name='global-settings'),
     path('app-config/', AppConfigView.as_view(), name='app-config'),
-    path('auth-token/', views.obtain_auth_token, name='api_token_auth_internal'),
+    path('auth-token/', auth_views.obtain_auth_token, name='api_token_auth_internal'),
     path('', include(router.urls)),
 ]
