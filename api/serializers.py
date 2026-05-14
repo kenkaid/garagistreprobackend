@@ -291,7 +291,7 @@ class VehicleSerializer(serializers.ModelSerializer):
         model = data.get('model') or (self.instance.model if self.instance else None)
         year = data.get('year') or (self.instance.year if self.instance else None)
 
-        if brand and model and year:
+        if brand and model and isinstance(year, int):
             # Recherche d'un modèle correspondant dans la base de référence
             # On utilise icontains pour être souple sur la casse et les espaces
             vehicle_model = VehicleModel.objects.filter(
