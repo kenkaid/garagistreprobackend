@@ -289,7 +289,11 @@ class VehicleSerializer(serializers.ModelSerializer):
         # On ignore la validation des années lors de la mise à jour si les champs sont partiels
         brand = data.get('brand') or (self.instance.brand if self.instance else None)
         model = data.get('model') or (self.instance.model if self.instance else None)
-        year = data.get('year') or (self.instance.year if self.instance else None)
+        year = data.get('year')
+
+        # Si year n'est pas fourni dans data et qu'on est en update, on prend celui de l'instance
+        if year is None and self.instance:
+            year = self.instance.year
 
         if brand and model and isinstance(year, int):
             # Recherche d'un modèle correspondant dans la base de référence

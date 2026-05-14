@@ -485,8 +485,12 @@ class VehicleViewSet(viewsets.ModelViewSet):
                     return Response({'error': 'Ce véhicule est déjà associé à un autre compte.'}, status=status.HTTP_400_BAD_REQUEST)
 
                 # On lie le véhicule existant à l'utilisateur
-                vehicle_data.pop('owner_type', None) # Sécurité
-                serializer = self.get_serializer(existing_vehicle, data=vehicle_data, partial=True)
+                # On utilise un nouveau dictionnaire pour ne pas affecter request.data globalement
+                update_data = vehicle_data.copy()
+                update_data.pop('owner_type', None)
+                update_data.pop('license_plate', None)
+                
+                serializer = self.get_serializer(existing_vehicle, data=update_data, partial=True)
                 serializer.is_valid(raise_exception=True)
                 serializer.save(owner=user)
                 return Response(serializer.data, status=status.HTTP_200_OK)
