@@ -498,7 +498,10 @@ class VehicleViewSet(viewsets.ModelViewSet):
             # Création du nouveau véhicule
             vehicle_data.pop('owner_type', None) # Sécurité si envoyé par le frontend
             serializer = self.get_serializer(data=vehicle_data)
-            serializer.is_valid(raise_exception=True)
+            if not serializer.is_valid():
+                print(f"[VehicleViewSet] Erreurs de validation (création): {serializer.errors}")
+                print(f"[VehicleViewSet] Données reçues: {vehicle_data}")
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             serializer.save(owner=user)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
