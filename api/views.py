@@ -184,7 +184,7 @@ class MechanicViewSet(viewsets.ModelViewSet):
         # MAIS ici on veut permettre de voir les mécaniciens experts sur la carte sans login.
         return Mechanic.objects.filter(is_expert=True, is_active=True)
 
-    @action(detail=False, methods=['get', 'patch', 'put'])
+    @action(detail=False, methods=['get', 'patch', 'put'], permission_classes=[permissions.IsAuthenticated])
     def current(self, request):
         """
         Récupère ou met à jour le profil complet de l'utilisateur connecté.
