@@ -30,7 +30,9 @@ SECRET_KEY = 'django-insecure-n9l$i5gyxl6irsls6&gi%-_#7)==7endagzdnh-156bm2-h_ve
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [SERVER_IP, 'localhost', '127.0.0.1', '10.0.2.2']
+ALLOWED_HOSTS = [SERVER_IP, 'localhost', '127.0.0.1', '10.0.2.2', 'obdciauto.com', 'www.obdciauto.com']
+
+CSRF_TRUSTED_ORIGINS = ['https://obdciauto.com', 'https://www.obdciauto.com']
 
 
 # Application definition
