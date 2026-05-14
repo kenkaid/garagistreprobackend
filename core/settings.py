@@ -18,8 +18,13 @@ try:
     from decouple import config
 except ImportError:
     # Fallback si python-decouple n'est pas installé
-    def config(name, default=None):
-        return os.environ.get(name, default)
+    def config(name, default=None, cast=None):
+        val = os.environ.get(name, default)
+        if cast is bool and isinstance(val, str):
+            return val.lower() in ('true', '1', 't', 'y', 'yes')
+        if cast and val is not None:
+            return cast(val)
+        return val
 
 # Configuration dynamique de l'IP pour la production
 SERVER_IP = config('SERVER_IP', default='38.242.198.246')
