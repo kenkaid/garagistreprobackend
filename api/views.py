@@ -169,13 +169,15 @@ class RegisterView(generics.CreateAPIView):
 
 class MechanicViewSet(viewsets.ModelViewSet):
     serializer_class = MechanicSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
         if self.request.user.is_authenticated:
             if self.request.user.is_staff:
                 return Mechanic.objects.all()
             return Mechanic.objects.filter(user=self.request.user)
-        return Mechanic.objects.none()
+        # Pour les non-authentifiés (ex: carte des mécaniciens), on montre les experts actifs
+        return Mechanic.objects.filter(is_expert=True, is_active=True)
 
     @action(detail=False, methods=['get', 'patch', 'put'], permission_classes=[permissions.IsAuthenticated])
     def current(self, request):
@@ -1682,7 +1684,7 @@ class GaragesListView(generics.ListAPIView):
     """
     Liste tous les garages certifiés à proximité.
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     serializer_class = UserSerializer
 
     def get_queryset(self):
@@ -1747,7 +1749,9 @@ class AppNotificationViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return AppNotification.objects.filter(user=self.request.user)
+        if self.request.user.is_authenticated:
+            return AppNotification.objects.filter(user=self.request.user)
+        return AppNotification.objects.none()
 
     @action(detail=False, methods=['post'])
     def mark_all_read(self, request):

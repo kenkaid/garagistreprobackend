@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Configuration dynamique de l'IP pour la production
 # On essaie de récupérer l'IP via une variable d'environnement ou on utilise l'IP locale par défaut
-SERVER_IP = os.getenv('SERVER_IP', '192.168.1.5')
+SERVER_IP = os.getenv('SERVER_IP', '38.242.198.246')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
