@@ -176,15 +176,23 @@ class MechanicViewSet(viewsets.ModelViewSet):
             if self.request.user.is_staff:
                 return Mechanic.objects.all()
             return Mechanic.objects.filter(user=self.request.user)
-        # Pour les non-authentifiés (ex: carte des mécaniciens), on montre les experts actifs
+        
+        # Pour les non-authentifiés (ex: carte des mécaniciens), on montre les experts actifs.
+        # Note: IsAuthenticatedOrReadOnly sur la classe assure que les actions d'écriture
+        # (POST, PUT, PATCH, DELETE) sont bloquées pour les anonymes.
+        # On renvoie un queryset vide pour l'action list anonyme si on veut forcer le login,
+        # MAIS ici on veut permettre de voir les mécaniciens experts sur la carte sans login.
         return Mechanic.objects.filter(is_expert=True, is_active=True)
 
-    @action(detail=False, methods=['get', 'patch', 'put'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['get', 'patch', 'put'], permission_classes=[permissions.AllowAny])
     def current(self, request):
         """
         Récupère ou met à jour le profil complet de l'utilisateur connecté.
         S'adapte selon le type d'utilisateur (MECHANIC ou FLEET_OWNER).
         """
+        if not request.user.is_authenticated:
+            return Response({"error": "Authentification requise pour accéder au profil actuel.", "detail": "identifiant incorrect"}, status=status.HTTP_401_UNAUTHORIZED)
+
         user = request.user
 
         # Cas spécial pour les mécaniciens qui ont un profil étendu

@@ -19,6 +19,21 @@ class AuthTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('token', response.data)
 
+    def test_current_profile_anonymous(self):
+        """Teste l'accès au profil actuel sans être connecté (doit être 401 avec message explicite)."""
+        url = reverse('user-current')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 401)
+        self.assertIn('identifiant incorrect', response.data['detail'])
+
+    def test_current_profile_authenticated(self):
+        """Teste l'accès au profil actuel en étant connecté."""
+        self.client.force_authenticate(user=self.user)
+        url = reverse('user-current')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['username'], 'testuser')
+
 class DiagnosticIATestCase(TestCase):
     def setUp(self):
         # Création d'un utilisateur et d'un mécanicien
