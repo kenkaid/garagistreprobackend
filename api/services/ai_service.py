@@ -321,75 +321,66 @@ class DTCModelAI:
             # 0. Suppression initiale des espaces multiples et normalisation
             text = re.sub(r'\s+', ' ', text).strip()
 
-            # 1. Remplacements pour un langage "parlant" mais correct
-            # On évite le mot "gâté" systématique qui fait peu professionnel
-            # On privilégie "défectueux", "en panne", "abîmé"
+            # 1. Remplacements pour un langage technique précis et professionnel
             repls = [
-                (r'défectueux', 'défectueux (en panne)'),
-                (r'défaillant', 'en panne'),
-                (r'défaillance', 'problème'),
-                (r'dysfonctionnement', 'problème technique'),
-                (r'endommagé', 'cassé ou abîmé'),
-                (r'corrodé', 'rouillé'),
-                (r'obstruction', 'bouchage'),
-                (r'obstrué', 'bouché'),
-                (r'remplacer', 'changer'),
-                (r'inspection', 'contrôle visuel'),
-                (r'inspecter', 'bien vérifier'),
-                (r'vérifier', 'contrôler'),
-                (r'nettoyage', 'nettoyer'),
+                (r'défectueux', 'défectueux'),
+                (r'défaillant', 'défaillant'),
+                (r'défaillance', 'défaillance'),
+                (r'dysfonctionnement', 'dysfonctionnement'),
+                (r'endommagé', 'endommagé'),
+                (r'corrodé', 'oxydé'),
+                (r'obstruction', 'obstruction'),
+                (r'obstrué', 'obstrué'),
+                (r'remplacer', 'remplacer'),
+                (r'inspection', 'inspection'),
+                (r'inspecter', 'inspecter'),
+                (r'vérifier', 'vérifier'),
+                (r'nettoyage', 'nettoyage'),
                 (r'nettoyer', 'nettoyer'),
-                (r'ajustement', 'réglage'),
-                (r'ajuster', 'régler'),
-                (r'réparation', 'réparer'),
+                (r'ajustement', 'ajustement'),
+                (r'ajuster', 'ajuster'),
+                (r'réparation', 'réparation'),
                 (r'réparer', 'réparer'),
-                (r'faisceau', 'faisceau (groupe de fils)'),
-                (r'câblage', 'fils électriques'),
-                (r'connecteur', 'fiche (prise)'),
-                (r'court-circuit', 'court-circuit (masse)'),
-                (r'circuit ouvert', 'fil coupé ou débranché'),
-                (r'alimentation', 'alimentation électrique'),
-                (r'tension', 'tension (voltage)'),
-                (r'capteur', 'capteur (sensor)'),
-                (r'sonde', 'sonde (capteur)'),
-                (r'perte de puissance', "perte de puissance (le moteur n'a plus de force)"),
-                (r'ralenti instable', 'le moteur tremble au repos'),
-                (r'calage', "le moteur s'éteint tout seul"),
-                (r'calculateur', 'ordinateur de bord (calculateur)'),
-                (r'insuffisant', 'trop faible'),
-                (r'excessif', 'trop élevé'),
-                (r'solution', 'solution'),
-                (r'cause', 'cause'),
-                (r'dû à', 'à cause de'),
-                (r'cause probable', 'cause probable'),
-                (r'colmaté', 'bouché'),
-                (r'manomètre', 'appareil de mesure de pression'),
-                (r'valeur nominale', 'valeur normale'),
-                (r'durite', 'tuyau (durite)'),
-                (r'admission', "entrée d'air (admission)"),
-                (r'échappement', 'sortie des gaz (échappement)'),
+                (r'faisceau', 'faisceau électrique'),
+                (r'câblage', 'câblage'),
+                (r'connecteur', 'connecteur'),
+                (r'court-circuit', 'court-circuit'),
+                (r'circuit ouvert', 'circuit ouvert'),
+                (r'alimentation', 'alimentation'),
+                (r'tension', 'tension'),
+                (r'capteur', 'capteur'),
+                (r'sonde', 'sonde'),
+                (r'perte de puissance', 'perte de puissance moteur'),
+                (r'ralenti instable', 'ralenti instable'),
+                (r'calage', 'calage moteur'),
+                (r'calculateur', 'calculateur'),
+                (r'insuffisant', 'insuffisant'),
+                (r'excessif', 'excessif'),
+                (r'dû à', 'dû à'),
+                (r'colmaté', 'colmaté'),
+                (r'manomètre', 'manomètre'),
+                (r'valeur nominale', 'valeur nominale'),
+                (r'durite', 'durite'),
+                (r'admission', 'admission'),
+                (r'échappement', 'échappement'),
             ]
             
             for old, new in repls:
                 pattern = r'\b' + old + r'\b'
+                # On ne remplace que si c'est strictement différent ou pour normaliser la casse
                 text = re.sub(pattern, new, text, flags=re.IGNORECASE)
-
-            # 2. Cas spécifiques de fuites
-            text = re.sub(r"fuite d'air", "prise d'air (fuite d'air)", text, flags=re.IGNORECASE)
-            text = re.sub(r"fuite de (liquide|huile|carburant|essence|gasoil|eau|refroidissement)", r"fuite de \1 (écoulement)", text, flags=re.IGNORECASE)
 
             # 3. Suppression des répétitions de mots consécutifs (ex: "le le")
             text = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', text, flags=re.IGNORECASE)
             
             # 4. Suppression des répétitions de blocs entre parenthèses identiques
-            # ex: "capteur (sensor) (sensor)" -> "capteur (sensor)"
             text = re.sub(r'(\([^\)]+\))\s*\1', r'\1', text)
             
             # 5. Nettoyage final
             text = re.sub(r'\s+', ' ', text).strip()
             
-            # Majuscule au début si besoin
-            if text and len(text) > 0:
+            # Majuscule au début
+            if text:
                 text = text[0].upper() + text[1:]
                 
             return text
@@ -479,60 +470,60 @@ class DTCModelAI:
                 # Système de Smart Fallback basé sur le type de code
                 if code.startswith('P0'):
                     merged_causes = [
-                        "Problème général sur le moteur (standard OBD2)",
-                        "Mauvais signal d'un capteur (sensor) important",
-                        "Fils de courant coupés ou fiche mal branchée",
-                        "Fuite d'air ou de carburant quelque part"
+                        "Défaut générique du groupe motopropulseur",
+                        "Signal de capteur hors tolérance",
+                        "Problème de connectivité électrique",
+                        "Dysfonctionnement du circuit concerné"
                     ]
                     merged_solutions = [
-                        "Contrôler les fiches et les fils sur le moteur",
-                        "Vérifier si y'a pas un tuyau percé ou débranché",
-                        "Nettoyer le capteur (sensor) lié à ce code",
-                        "Effacer le code et voir s'il revient après avoir roulé"
+                        "Vérifier les connecteurs et le câblage du capteur",
+                        "Contrôler l'état des durites et des connexions",
+                        "Nettoyer le composant si possible",
+                        "Effectuer un test de continuité sur le circuit"
                     ]
                 elif code.startswith('P1') or code.startswith('P2') or code.startswith('P3'):
                     merged_causes = [
-                        f"Problème spécifique au constructeur {brand}",
-                        "Capteur propriétaire ou module électronique fatigué",
-                        "Mauvais réglage d'usine ou mise à jour nécessaire",
-                        "Fils de courant (faisceau) abîmés ou fiche rouillée"
+                        f"Défaut spécifique au constructeur {brand}",
+                        "Capteur ou actionneur défaillant",
+                        "Problème de gestion électronique",
+                        "Faisceau électrique endommagé"
                     ]
                     merged_solutions = [
-                        f"Chercher la note technique {brand} pour ce code {code}",
-                        "Vérifier les fiches du calculateur moteur",
-                        "Tester la résistance du composant lié à cette panne",
-                        "Consulter un électricien auto expert en {brand}"
+                        f"Consulter la documentation technique {brand}",
+                        "Vérifier les alimentations et masses du calculateur",
+                        "Tester le composant selon les spécifications constructeur",
+                        "Contrôler l'intégrité du faisceau"
                     ]
                 elif code.startswith('U'):
                     merged_causes = [
-                        "Problème de communication entre les ordinateurs (réseau CAN)",
-                        "Batterie faible ou voltage instable",
-                        "Fiche de l'ordinateur de bord (calculateur) mal enfoncée",
-                        "Un module ne répond plus sur le réseau"
+                        "Perte de communication sur le réseau CAN",
+                        "Tension de batterie insuffisante ou instable",
+                        "Mauvais contact sur le bus de données",
+                        "Module de contrôle ne répondant pas"
                     ]
                     merged_solutions = [
-                        "Vérifier le voltage de la batterie (doit être > 12.5V)",
-                        "Contrôler si les fiches du calculateur sont bien fixées",
-                        "Chercher s'il n'y a pas un court-circuit sur les fils de communication",
-                        "Débrancher la batterie 10 minutes et rebrancher"
+                        "Vérifier l'état et la tension de la batterie",
+                        "Contrôler les connexions des boîtiers électroniques",
+                        "Vérifier les fusibles liés aux modules de communication",
+                        "Inspecter le câblage du réseau de données"
                     ]
                 else:
                     # Varier les causes génériques selon le code (Fallback ultime)
                     generic_sets = [
                         [
-                            "Pièce gâtée quelque part",
-                            "Fils de courant coupés ou fiche rouillée",
-                            "Petit problème dans l'ordinateur de bord"
+                            "Anomalie détectée sur le système",
+                            "Mauvais contact ou câblage défectueux",
+                            "Dysfonctionnement électronique interne"
                         ],
                         [
-                            "Mauvais contact électrique ou fiche débranchée",
-                            "Capteur (sensor) fatigué ou à nettoyer",
-                            "Fuite ou pression anormale dans le système"
+                            "Signal de capteur incohérent",
+                            "Composant fatigué ou encrassé",
+                            "Fuite ou pression anormale détectée"
                         ],
                         [
-                            "Problème de communication entre les calculateurs",
-                            "Composant mécanique interne usé",
-                            "Fusible grillé ou relais défaillant"
+                            "Erreur de communication entre modules",
+                            "Usure mécanique d'un composant",
+                            "Alimentation électrique instable"
                         ]
                     ]
                     # Utiliser le code pour choisir un set
@@ -542,19 +533,19 @@ class DTCModelAI:
             if not merged_solutions:
                 generic_sol_sets = [
                     [
-                        "Regarder bien partout sur le moteur",
-                        "Contrôler les fils de courant et les fiches",
-                        "Chercher plus de détails sur cette panne"
+                        "Inspecter visuellement les composants moteur",
+                        "Vérifier les connexions électriques",
+                        "Approfondir le diagnostic avec un outil spécialisé"
                     ],
                     [
-                        "Nettoyer le capteur concerné et sa fiche",
-                        "Vérifier les fusibles du compartiment moteur",
-                        "Faire un diagnostic plus poussé avec un expert"
+                        "Nettoyer le capteur et son connecteur",
+                        "Contrôler les fusibles et relais",
+                        "Faire vérifier le système par un expert"
                     ],
                     [
-                        "Tester la continuité des fils électriques",
-                        "Contrôler si y'a pas une prise d'air ou une fuite",
-                        "Réinitialiser le calculateur et voir si ça revient"
+                        "Tester la continuité et l'isolement du câblage",
+                        "Vérifier l'absence de fuites sur le circuit",
+                        "Réinitialiser les codes et tester sur route"
                     ]
                 ]
                 set_idx = (sum(ord(char) for char in code) + 1) % len(generic_sol_sets)
@@ -581,28 +572,28 @@ class DTCModelAI:
             import random
             severity_messages = {
                 'critical': [
-                    "⚠️ PANNE CRITIQUE — Arrêtez le véhicule immédiatement",
-                    "❌ DANGER — Ne roulez plus avec le véhicule dans cet état",
-                    "⚠️ ALERTE ROUGE — Panne sérieuse détectée, coupez le moteur",
-                    "🆘 URGENCE MÉCANIQUE — Risque de casse moteur imminente",
+                    "⚠️ DÉFAUT CRITIQUE — Arrêt immédiat recommandé",
+                    "❌ ALERTE SÉCURITÉ — Risque de dommage majeur",
+                    "⚠️ URGENCE TECHNIQUE — Système hors service",
+                    "🆘 INTERVENTION IMMÉDIATE — Panne grave détectée",
                 ],
                 'high': [
-                    "🔴 PANNE GRAVE — Réparation nécessaire rapidement",
-                    "🚫 PROBLÈME SÉRIEUX — Conduisez le véhicule au garage dès aujourd'hui",
-                    "🔴 DÉFAUT MAJEUR — Risque d'endommagement d'autres composants",
-                    "🛑 ALERTE — Problème électrique ou mécanique important",
+                    "🔴 DÉFAUT MAJEUR — Réparation urgente nécessaire",
+                    "🚫 ANOMALIE SÉRIEUSE — Système fortement dégradé",
+                    "🔴 ALERTE NIVEAU 2 — Risque de panne immobilisante",
+                    "🛑 DÉFAUT IMPORTANT — Contrôle nécessaire sans délai",
                 ],
                 'medium': [
-                    "🟠 PROBLÈME — À vérifier dans les prochains jours",
-                    "⚠️ ATTENTION — Anomalie détectée sur le système moteur",
-                    "🟠 À CONTRÔLER — Prévoyez une visite chez votre mécanicien",
-                    "⚙️ MAINTENANCE — Le système ne fonctionne pas de manière optimale",
+                    "🟠 ANOMALIE — Maintenance à prévoir",
+                    "⚠️ ATTENTION — Fonctionnement anormal détecté",
+                    "🟠 À CONTRÔLER — Prévoyez une visite en atelier",
+                    "⚙️ MAINTENANCE — Performance du système réduite",
                 ],
                 'low': [
-                    "🟢 ANOMALIE MINEURE — À surveiller lors de vos prochains trajets",
-                    "ℹ️ INFORMATION — Légère fatigue d'un composant détectée",
-                    "🟡 À SURVEILLER — Pas d'urgence, mais restez vigilant",
-                    "📝 NOTE — Un simple nettoyage ou réglage pourrait suffire",
+                    "🟢 AVIS MINEUR — Simple contrôle conseillé",
+                    "ℹ️ INFORMATION — Légère anomalie détectée",
+                    "🟡 À SURVEILLER — Pas d'urgence immédiate",
+                    "📝 NOTE — Entretien courant à envisager",
                 ],
             }
             
@@ -615,8 +606,8 @@ class DTCModelAI:
             interpretation = (
                 f"{severity_txt}{vehicle_ctx}.\n"
                 f"Diagnostic : {final_meaning}.\n"
-                f"Cause probable : {merged_causes[0] if merged_causes else 'analyse en cours'}.\n"
-                f"Action recommandée : {merged_solutions[0] if merged_solutions else 'consulter un expert'}."
+                f"Cause possible : {merged_causes[0] if merged_causes else 'Analyse en cours'}.\n"
+                f"Action corrective : {merged_solutions[0] if merged_solutions else 'Consulter un spécialiste'}."
             )
             if db_tips:
                 interpretation += f"\n💡 Conseil : {db_tips}"
@@ -630,9 +621,7 @@ class DTCModelAI:
                 'meaning': final_meaning,
                 'severity': final_severity,
                 'certitude': certitude,
-                'interpretation': (
-                    f"Sur votre {brand} {model}, ce code indique : {final_meaning}."
-                ),
+                'interpretation': interpretation,
                 'chef_note': next((advice for advice in chef_advice if code[:5] in advice), None),
                 'symptoms': merged_symptoms,
                 'commonSymptoms': merged_symptoms,

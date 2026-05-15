@@ -64,7 +64,7 @@ class DiagnosticService:
                 brand=brand,
                 defaults={
                     'description': generic_ref.description if generic_ref else f'Code défaut {code} détecté sur {brand}',
-                    'meaning': generic_ref.meaning if generic_ref else f"Le système a détecté un dysfonctionnement lié au code {code} sur ce véhicule {brand}. Une inspection approfondie des composants associés est recommandée pour confirmer la panne.",
+                    'meaning': generic_ref.meaning if generic_ref else f"Code {code} détecté sur ce véhicule {brand}. Ce défaut nécessite une analyse technique pour identifier le composant défaillant.",
                     'severity': generic_ref.severity if generic_ref else 'medium',
                 }
             )

@@ -26,14 +26,14 @@ class User(AbstractUser):
     def active_subscription(self):
         from api.models import Subscription
         from django.utils import timezone
-        
+
         # PRIORITÉ 1: Abonnement lié via User
         sub = Subscription.objects.filter(
             user=self,
             is_active=True,
             end_date__gt=timezone.now()
         ).first()
-        
+
         # PRIORITÉ 2: Abonnement lié via profil mécanicien
         if not sub and self.user_type == 'MECHANIC':
             try:
@@ -120,10 +120,10 @@ class Mechanic(models.Model):
             is_active=True,
             end_date__gt=timezone.now()
         ).first()
-        
+
         if not sub:
             sub = self.user.active_subscription
-            
+
         return sub
 
     @property
@@ -157,7 +157,7 @@ class Review(models.Model):
         ordering = ['-created_at']
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(scan_session__isnull=False) | models.Q(appointment__isnull=False),
+                check=models.Q(scan_session__isnull=False) | models.Q(appointment__isnull=False),
                 name='review_must_have_intervention'
             )
         ]
@@ -434,7 +434,7 @@ class DTCReference(models.Model):
             import re
             # 0. Suppression des mots en double
             text = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', text, flags=re.IGNORECASE)
-            
+
             # On définit d'abord les cas spécifiques pour éviter les doubles remplacements
             text = re.sub(r"fuite d'air", "prise d'air (fuite d'air)", text, flags=re.IGNORECASE)
             text = re.sub(r"fuite de liquide", "fuite (ça coule)", text, flags=re.IGNORECASE)
@@ -467,7 +467,7 @@ class DTCReference(models.Model):
                 # Utilisation de frontières de mots si possible, sinon simple re.sub
                 pattern = r'\b' + old + r'\b' if not old.startswith(r'(') else old
                 text = re.sub(pattern, new, text, flags=re.IGNORECASE)
-            
+
             # Nettoyage final des répétitions
             text = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', text, flags=re.IGNORECASE)
             return text
