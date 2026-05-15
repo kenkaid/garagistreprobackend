@@ -42,7 +42,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         queryset = CustomerProfile.objects.filter(mechanic=mechanic)
 
         # On annote avec les statistiques
-        from django.db.models import OuterRef, Subquery, Sum, Count, Max
+        from django.db.models import OuterRef, Subquery, Sum, Count, Max, F
         
         # Sous-requêtes pour les véhicules et les scans liés à ce client (par téléphone)
         vehicles_of_customer = Vehicle.objects.filter(owner_phone=OuterRef('phone'))
@@ -60,7 +60,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
             ),
             total_spent=Subquery(
                 scans_of_customer.values('vehicle__owner_phone').annotate(
-                    s=Sum(models.F('actual_labor_cost') + models.F('actual_parts_cost'))
+                    s=Sum(F('actual_labor_cost') + F('actual_parts_cost'))
                 ).values('s')
             ),
             last_visit=Subquery(
