@@ -1,10 +1,10 @@
 Django==4.2.30
 django-cors-headers==4.3.1
 django-quill-editor==0.1.40
-djangorestframework==3.14.0
+djangorestframework>=3.15.2
 mysqlclient==2.2.0
 Pillow>=10.3.0
 reportlab==4.0.4
-sqlparse==0.4.4
+sqlparse>=0.5.0
 asgiref==3.7.2
 python-decouple==3.8
