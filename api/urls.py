@@ -8,11 +8,13 @@ from api.views import (
     WelcomeContentViewSet, IoTDeviceViewSet, TelemetryViewSet, PredictiveAlertViewSet, FleetDashboardView,
     PersonalDashboardView, WavePaymentInitView, WaveWebhookView, AppConfigView, AppointmentViewSet,
     GaragesListView, ClientsSearchView, MaintenanceReminderViewSet, AppNotificationViewSet, ChatMessageViewSet,
-    ReviewViewSet, SparePartStoreViewSet, SparePartViewSet, TowTruckViewSet
+    ReviewViewSet, SparePartStoreViewSet, SparePartViewSet, TowTruckViewSet,
+    CustomerViewSet
 )
 
 router = DefaultRouter()
 router.register(r'appointments', AppointmentViewSet, basename='appointment')
+router.register(r'customers', CustomerViewSet, basename='customer')
 router.register(r'messages', ChatMessageViewSet, basename='message')
 router.register(r'notifications', AppNotificationViewSet, basename='notification')
 router.register(r'reminders', MaintenanceReminderViewSet, basename='reminder')

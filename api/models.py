@@ -279,6 +279,26 @@ class Vehicle(models.Model):
     def __str__(self):
         return f"{self.license_plate} ({self.brand} {self.model})"
 
+class CustomerProfile(models.Model):
+    """
+    Notes privées et profil client spécifique pour un mécanicien/garage.
+    Un client est identifié par son numéro de téléphone de manière unique dans le garage.
+    """
+    mechanic = models.ForeignKey(Mechanic, on_delete=models.CASCADE, related_name='customers')
+    name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=20)
+    private_notes = models.TextField(blank=True, help_text="Notes privées (client difficile, préfère le matin, etc.)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('mechanic', 'phone')
+        verbose_name = "Profil Client"
+        verbose_name_plural = "Profils Clients"
+
+    def __str__(self):
+        return f"{self.name} ({self.phone}) - {self.mechanic.shop_name}"
+
 # === MODULE PRÉVENTION ET TÉLÉMÉTRIE (Nouveau) ===
 
 class IoTDevice(models.Model):

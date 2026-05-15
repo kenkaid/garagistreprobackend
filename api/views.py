@@ -10,7 +10,8 @@ from api.models import (
     Subscription, User, Payment, VehicleModel, GlobalSettings,
     UpcomingModule, WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert,
     Appointment, MaintenanceReminder, RegionalEvent, ChatMessage, Review,
-    SparePartStore, SparePart, TowTruck, VehicleBaseline, VehiclePIDHistory, VehicleMLModel
+    SparePartStore, SparePart, TowTruck, VehicleBaseline, VehiclePIDHistory, VehicleMLModel,
+    CustomerProfile
 )
 from api.serializers import (
     MechanicSerializer, VehicleSerializer, DTCReferenceSerializer,
@@ -19,8 +20,107 @@ from api.serializers import (
     WelcomeContentSerializer, IoTDeviceSerializer, TelemetryDataSerializer, PredictiveAlertSerializer,
     MaintenanceReminderSerializer, RegionalEventSerializer, AppointmentSerializer,
     AppNotificationSerializer, ChatMessageSerializer, ReviewSerializer,
-    SparePartStoreSerializer, SparePartSerializer, TowTruckSerializer
+    SparePartStoreSerializer, SparePartSerializer, TowTruckSerializer,
+    CustomerProfileSerializer
 )
+
+class CustomerViewSet(viewsets.ModelViewSet):
+    serializer_class = CustomerProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.user_type != 'MECHANIC':
+            return CustomerProfile.objects.none()
+        
+        try:
+            mechanic = user.mechanic_profile
+        except Mechanic.DoesNotExist:
+            return CustomerProfile.objects.none()
+
+        # On récupère tous les clients (CustomerProfile) créés pour ce mécanicien
+        queryset = CustomerProfile.objects.filter(mechanic=mechanic)
+
+        # On annote avec les statistiques
+        from django.db.models import OuterRef, Subquery, Sum, Count, Max
+        
+        # Sous-requêtes pour les véhicules et les scans liés à ce client (par téléphone)
+        vehicles_of_customer = Vehicle.objects.filter(owner_phone=OuterRef('phone'))
+        scans_of_customer = ScanSession.objects.filter(
+            vehicle__owner_phone=OuterRef('phone'),
+            mechanic=mechanic
+        )
+
+        queryset = queryset.annotate(
+            vehicle_count=Subquery(
+                vehicles_of_customer.values('owner_phone').annotate(c=Count('id')).values('c')
+            ),
+            scan_count=Subquery(
+                scans_of_customer.values('vehicle__owner_phone').annotate(c=Count('id')).values('c')
+            ),
+            total_spent=Subquery(
+                scans_of_customer.values('vehicle__owner_phone').annotate(
+                    s=Sum(models.F('actual_labor_cost') + models.F('actual_parts_cost'))
+                ).values('s')
+            ),
+            last_visit=Subquery(
+                scans_of_customer.values('vehicle__owner_phone').annotate(m=Max('date')).values('m')
+            )
+        )
+
+        return queryset.order_by('-last_visit')
+
+    def perform_create(self, serializer):
+        serializer.save(mechanic=self.request.user.mechanic_profile)
+
+    @action(detail=False, methods=['get'])
+    def sync(self, request):
+        """
+        Synchronise les clients à partir des sessions de scan existantes.
+        Crée des CustomerProfile pour chaque numéro de téléphone unique trouvé dans les scans du mécanicien.
+        """
+        user = request.user
+        if user.user_type != 'MECHANIC':
+            return Response({"error": "Réservé aux mécaniciens"}, status=status.HTTP_403_FORBIDDEN)
+        
+        mechanic = user.mechanic_profile
+        
+        # Trouver tous les couples (owner_name, owner_phone) uniques dans les scans de ce mécanicien
+        customer_data = ScanSession.objects.filter(mechanic=mechanic).values(
+            'vehicle__owner_name', 'vehicle__owner_phone'
+        ).distinct()
+
+        created_count = 0
+        for data in customer_data:
+            name = data['vehicle__owner_name']
+            phone = data['vehicle__owner_phone']
+            if phone:
+                obj, created = CustomerProfile.objects.get_or_create(
+                    mechanic=mechanic,
+                    phone=phone,
+                    defaults={'name': name or "Client Inconnu"}
+                )
+                if created:
+                    created_count += 1
+                elif name and obj.name == "Client Inconnu":
+                    obj.name = name
+                    obj.save()
+
+        return Response({"status": "sync_complete", "created": created_count})
+
+    @action(detail=True, methods=['get'])
+    def history(self, request, pk=None):
+        """
+        Récupère l'historique complet des scans pour ce client.
+        """
+        customer = self.get_object()
+        scans = ScanSession.objects.filter(
+            vehicle__owner_phone=customer.phone,
+            mechanic=customer.mechanic
+        ).order_by('-date')
+        
+        serializer = ScanSessionSerializer(scans, many=True, context={'request': request})
+        return Response(serializer.data)
 
 class TowTruckViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = TowTruck.objects.filter(is_available=True)

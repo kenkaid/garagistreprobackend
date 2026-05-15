@@ -13,8 +13,23 @@ from api.models import (
     Subscription, Payment, VehicleModel, GlobalSettings, UpcomingModule,
     WelcomeContent, IoTDevice, TelemetryData, PredictiveAlert,
     MaintenanceReminder, RegionalEvent, Appointment, AppNotification, ChatMessage,
-    SparePartStore, SparePartCategory, SparePart, Review, TowTruck, Feature
+    SparePartStore, SparePartCategory, SparePart, Review, TowTruck, Feature, CustomerProfile
 )
+
+class CustomerProfileSerializer(serializers.ModelSerializer):
+    vehicle_count = serializers.IntegerField(read_only=True)
+    scan_count = serializers.IntegerField(read_only=True)
+    total_spent = serializers.IntegerField(read_only=True)
+    last_visit = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = CustomerProfile
+        fields = [
+            'id', 'mechanic', 'name', 'phone', 'private_notes', 
+            'created_at', 'updated_at', 
+            'vehicle_count', 'scan_count', 'total_spent', 'last_visit'
+        ]
+        read_only_fields = ['mechanic', 'created_at', 'updated_at']
 
 class TowTruckSerializer(serializers.ModelSerializer):
     class Meta:
