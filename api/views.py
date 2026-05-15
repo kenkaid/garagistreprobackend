@@ -614,10 +614,15 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
         try:
             scan_session = self.get_object()
             is_quote = request.query_params.get('type') != 'invoice'
-            
+            output_format = request.query_params.get('format', 'pdf')
+
             # Si is_completed est à True dans la session, on peut forcer le type facture
             if scan_session.is_completed:
                 is_quote = False
+
+            if output_format == 'html':
+                html_content = PDFGenerator.generate_invoice_html(scan_session, is_quote=is_quote)
+                return HttpResponse(html_content, content_type='text/html')
 
             pdf_content = PDFGenerator.generate_invoice_pdf(scan_session, is_quote=is_quote)
             

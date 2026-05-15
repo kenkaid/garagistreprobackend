@@ -17,7 +17,7 @@ class PDFGenerator:
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
         styles = getSampleStyleSheet()
-        
+
         # Styles personnalisés
         styles.add(ParagraphStyle(name='TitleStyle', fontSize=18, leading=22, alignment=1, spaceAfter=20, textColor=colors.HexColor('#1565C0')))
         styles.add(ParagraphStyle(name='SubTitleStyle', fontSize=14, leading=18, spaceAfter=10, textColor=colors.HexColor('#333333')))
@@ -30,11 +30,11 @@ class PDFGenerator:
         mechanic = scan_session.mechanic
         shop_name = mechanic.shop_name if mechanic else "Garage OBD CI"
         location = mechanic.location if mechanic else "Côte d'Ivoire"
-        
+
         # Titre (Devis ou Facture)
         doc_type = "DEVIS" if is_quote else "FACTURE"
         elements.append(Paragraph(f"{doc_type} #{scan_session.id}", styles['TitleStyle']))
-        
+
         # Infos Garage vs Infos Client
         data = [
             [Paragraph(f"<b>ÉMETTEUR :</b><br/>{shop_name}<br/>{location}", styles['NormalStyle']),
@@ -71,7 +71,7 @@ class PDFGenerator:
             dtc_data = [["Code", "Description", "Gravité"]]
             for sd in dtcs:
                 dtc_data.append([sd.dtc.code, sd.dtc.meaning[:100] + '...' if len(sd.dtc.meaning) > 100 else sd.dtc.meaning, sd.dtc.get_severity_display()])
-            
+
             t_dtc = Table(dtc_data, colWidths=[3*cm, 10*cm, 3*cm])
             t_dtc.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1565C0')),
@@ -113,3 +113,101 @@ class PDFGenerator:
         pdf = buffer.getvalue()
         buffer.close()
         return pdf
+
+    @staticmethod
+    def generate_invoice_html(scan_session, is_quote=True):
+        """
+        Génère le HTML pour un devis ou une facture.
+        """
+        mechanic = scan_session.mechanic
+        shop_name = mechanic.shop_name if mechanic else "Garage OBD CI"
+        location = mechanic.location if mechanic else "Côte d'Ivoire"
+        doc_type = "DEVIS" if is_quote else "FACTURE"
+        v = scan_session.vehicle
+        dtcs = scan_session.scan_dtcs.all()
+
+        dtc_rows = ""
+        if dtcs:
+            for sd in dtcs:
+                dtc_rows += f"""
+                <tr>
+                    <td>{sd.dtc.code}</td>
+                    <td>{sd.dtc.meaning[:100]}...</td>
+                    <td>{sd.dtc.get_severity_display()}</td>
+                </tr>
+                """
+        else:
+            dtc_rows = "<tr><td colspan='3'>Aucun code défaut détecté.</td></tr>"
+
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8"/>
+            <title>{doc_type} #{scan_session.id}</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; color: #212121; padding: 20px; font-size: 13px; }}
+                h1 {{ color: #1565C0; border-bottom: 2px solid #1565C0; padding-bottom: 6px; }}
+                h2 {{ color: #37474F; margin-top: 20px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }}
+                table {{ border-collapse: collapse; width: 100%; margin-bottom: 16px; }}
+                th {{ background: #1565C0; color: white; padding: 8px 10px; text-align: left; }}
+                td {{ padding: 8px 10px; border-bottom: 1px solid #E0E0E0; }}
+                tr:nth-child(even) td {{ background: #F5F5F5; }}
+                .header-table {{ border: none; }}
+                .header-table td {{ border: none; background: none; width: 50%; vertical-align: top; }}
+                .footer {{ margin-top: 40px; font-size: 11px; color: #9E9E9E; text-align: center; border-top: 1px solid #eee; padding-top: 10px; }}
+                .total {{ font-weight: bold; font-size: 15px; color: #1565C0; text-align: right; }}
+            </style>
+        </head>
+        <body>
+            <h1>🔧 {doc_type} #{scan_session.id}</h1>
+            
+            <table class="header-table">
+                <tr>
+                    <td>
+                        <strong>ÉMETTEUR :</strong><br/>
+                        {shop_name}<br/>
+                        {location}
+                    </td>
+                    <td>
+                        <strong>CLIENT :</strong><br/>
+                        {v.owner_name or 'Client Standard'}<br/>
+                        {v.owner_phone or ''}
+                    </td>
+                </tr>
+            </table>
+
+            <h2>🚗 INFORMATIONS VÉHICULE</h2>
+            <table>
+                <tr><td width="30%">Marque / Modèle</td><td><strong>{v.brand} {v.model}</strong></td></tr>
+                <tr><td>Immatriculation</td><td><strong>{v.license_plate}</strong></td></tr>
+                <tr><td>VIN</td><td>{v.vin or "N/A"}</td></tr>
+                <tr><td>Kilométrage</td><td>{scan_session.mileage_ecu or 'N/A'} km</td></tr>
+                <tr><td>Date du scan</td><td>{scan_session.date.strftime('%d/%m/%Y %H:%M')}</td></tr>
+            </table>
+
+            <h2>🔍 DIAGNOSTIC TECHNIQUE</h2>
+            <table>
+                <thead>
+                    <tr><th>Code</th><th>Description</th><th>Gravité</th></tr>
+                </thead>
+                <tbody>
+                    {dtc_rows}
+                </tbody>
+            </table>
+
+            <h2>💰 DÉTAIL DES COÛTS</h2>
+            <table>
+                <tr><td>Main d'œuvre estimée</td><td align="right">{scan_session.actual_labor_cost:,.0f} FCFA</td></tr>
+                <tr><td>Pièces de rechange estimées</td><td align="right">{scan_session.actual_parts_cost:,.0f} FCFA</td></tr>
+                <tr class="total"><td>TOTAL</td><td align="right">{scan_session.total_cost:,.0f} FCFA</td></tr>
+            </table>
+
+            <div class="footer">
+                Merci de votre confiance.<br/>
+                Généré par OBD CI le {timezone.now().strftime('%d/%m/%Y %H:%M')}
+            </div>
+        </body>
+        </html>
+        """
+        return html
