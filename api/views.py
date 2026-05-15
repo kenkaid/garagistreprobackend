@@ -840,6 +840,14 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
                 scan.is_completed = is_completed
                 scan.scan_type = scan_type
 
+                # MISE À JOUR DES INFOS VÉHICULE (PROPRIÉTAIRE)
+                if vehicle_data:
+                    vehicle = scan.vehicle
+                    vehicle.owner_name = vehicle_data.get('owner_name', vehicle.owner_name)
+                    vehicle.owner_phone = vehicle_data.get('owner_phone', vehicle.owner_phone)
+                    vehicle.license_plate = vehicle_data.get('license_plate', vehicle.license_plate)
+                    vehicle.save()
+
                 # Mise à jour expertise si fournie
                 if mileage_data:
                     scan.mileage_ecu = mileage_data.get('mileage_ecu', scan.mileage_ecu)
@@ -906,6 +914,13 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
             recent_scan.actual_labor_cost = actual_labor_cost
             recent_scan.actual_parts_cost = actual_parts_cost
             recent_scan.is_completed = is_completed
+
+            # MISE À JOUR DES INFOS VÉHICULE (PROPRIÉTAIRE) POUR SCAN RÉCENT
+            if vehicle_data:
+                vehicle = recent_scan.vehicle
+                vehicle.owner_name = vehicle_data.get('owner_name', vehicle.owner_name)
+                vehicle.owner_phone = vehicle_data.get('owner_phone', vehicle.owner_phone)
+                vehicle.save()
 
             # Important : Si le scan récent était un DIAGNOSTIC et qu'on reçoit une VERIFICATION,
             # on change le type (cas de l'effacement de défauts)
