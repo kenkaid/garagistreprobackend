@@ -40,6 +40,8 @@ from api.services.subscriptions import SubscriptionService
 from django.db import models
 from django.db.models import Sum, Count
 from django.utils import timezone
+from django.http import HttpResponse
+from api.services.pdf_service import PDFGenerator
 
 from math import radians, cos, sin, asin, sqrt
 
@@ -603,6 +605,28 @@ class ScanSessionViewSet(viewsets.ModelViewSet):
 
             return ScanSession.objects.none()
         return ScanSession.objects.none()
+
+    @action(detail=True, methods=['get'])
+    def generate_pdf(self, request, pk=None):
+        """
+        Génère un PDF (devis ou facture) pour une session de scan.
+        """
+        try:
+            scan_session = self.get_object()
+            is_quote = request.query_params.get('type') != 'invoice'
+            
+            # Si is_completed est à True dans la session, on peut forcer le type facture
+            if scan_session.is_completed:
+                is_quote = False
+
+            pdf_content = PDFGenerator.generate_invoice_pdf(scan_session, is_quote=is_quote)
+            
+            filename = f"{'Devis' if is_quote else 'Facture'}_{scan_session.id}.pdf"
+            response = HttpResponse(pdf_content, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def create(self, request, *args, **kwargs):
         # Utilise le service pour la création
